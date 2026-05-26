@@ -485,6 +485,53 @@ function formatSupabaseErrHint(err) {
   return "";
 }
 
+const SERVICE_PLAN_WEB = "web";
+const SERVICE_PLAN_FULL = "full";
+
+function normalizeServicePlan(raw) {
+  const v = String(raw ?? "")
+    .trim()
+    .toLowerCase();
+  if (v === SERVICE_PLAN_WEB || v === "solo_web" || v === "qr") return SERVICE_PLAN_WEB;
+  if (v === SERVICE_PLAN_FULL || v === "completo" || v === "whatsapp" || v === "wa") {
+    return SERVICE_PLAN_FULL;
+  }
+  return SERVICE_PLAN_FULL;
+}
+
+/** Metadata según plan comercial: web (sin bot) vs full (+ WhatsApp). */
+function metadataForServicePlan(templateMetadata, servicePlanRaw, { isDemo = false } = {}) {
+  const plan = normalizeServicePlan(servicePlanRaw);
+  const base = isDemo
+    ? metadataForDemoTenant(templateMetadata)
+    : coerceMetadataForRestaurantInsert(templateMetadata);
+  const out = typeof base === "object" && base !== null && !Array.isArray(base) ? { ...base } : {};
+  out.service_plan = plan;
+  out.qr_menu_enabled = out.qr_menu_enabled !== false;
+  out.mesa_qr_enabled = out.mesa_qr_enabled !== false;
+  if (plan === SERVICE_PLAN_WEB) {
+    out.bot_whatsapp_enabled = false;
+    out.bot_enforce_opening_hours = false;
+    out.bot_runtime_switches_visible = false;
+  } else if (out.bot_whatsapp_enabled === undefined) {
+    out.bot_whatsapp_enabled = true;
+  }
+  return out;
+}
+
+/**
+ * Número placeholder para tenant solo web (UNIQUE en whatsapp_number; no se usa en wwebjs).
+ */
+function uniquePlaceholderWhatsAppForWebOnly(slug) {
+  const s = normalizeDemoSlug(slug).replace(/[^a-z0-9]/g, "");
+  const tail = crypto
+    .createHash("sha256")
+    .update(s || "web")
+    .digest("hex")
+    .slice(0, 10);
+  return `5697${tail}`;
+}
+
 /** Metadata del restaurante demo: no heredar URL base de la plantilla (rompe QR/carta); habilitar módulos públicos. */
 function metadataForDemoTenant(templateMetadata) {
   const base = coerceMetadataForRestaurantInsert(templateMetadata);
@@ -502,24 +549,82 @@ function metadataForDemoTenant(templateMetadata) {
 }
 
 /**
- * Clona un restaurante plantilla + filas de menú y (opcional) un usuario admin del dashboard.
+ * Revalidación de sesión del panel (service role). No expone password_hash.
+ */
+async function verifyDashboardSession({ userId, restaurantId, role }) {
+  const uid = String(userId || "").trim();
+  if (!uid) {
+    return { ok: false, reason: "missing_user" };
+  }
+  const { data, error } = await supabase
+    .from(DASHBOARD_USERS_TABLE)
+    .select("id, role, is_active, updated_at, restaurant_id")
+    .eq("id", uid)
+    .maybeSingle();
+
+  if (error) {
+    return { ok: false, reason: "db_error", error: error.message };
+  }
+  if (!data || !data.is_active) {
+    return { ok: false, reason: "user_inactive_or_deleted" };
+  }
+  if (role && data.role !== role) {
+    return { ok: false, reason: "role_changed" };
+  }
+  if (!DASHBOARD_LOGIN_DB_ROLES.includes(data.role)) {
+    return { ok: false, reason: "invalid_role" };
+  }
+
+  const rid = restaurantId ? String(restaurantId).trim() : "";
+  if (rid) {
+    if (!data.restaurant_id || data.restaurant_id !== rid) {
+      return { ok: false, reason: "tenant_mismatch" };
+    }
+    const { data: rmeta, error: rErr } = await supabase
+      .from(TABLES.restaurants)
+      .select("demo_expires_at, is_demo")
+      .eq("id", rid)
+      .maybeSingle();
+    if (!rErr && rmeta?.demo_expires_at && new Date(rmeta.demo_expires_at).getTime() < Date.now()) {
+      return { ok: false, reason: "demo_expired" };
+    }
+  }
+
+  return {
+    ok: true,
+    user: {
+      id: data.id,
+      role: data.role,
+      updated_at: data.updated_at,
+      restaurant_id: data.restaurant_id
+    }
+  };
+}
+
+/**
+ * Clona plantilla → tenant (demo o producción) + menú + usuario admin.
  * Usa service role (solo desde proceso Node).
  */
-async function createDemoFromTemplate({
+async function createTenantFromTemplate({
   templateRestaurantId,
-  demoSlug: demoSlugRaw,
-  demoName: demoNameRaw,
+  tenantSlug: tenantSlugRaw,
+  tenantName: tenantNameRaw,
+  isDemo = true,
   expiresDays: expiresDaysRaw,
   adminUsername: adminUsernameRaw,
   adminPassword: adminPasswordRaw,
-  demoWhatsappNumber: demoWhatsappNumberRaw
+  whatsappNumber: whatsappNumberRaw,
+  servicePlan: servicePlanRaw
 }) {
   const tpl = String(templateRestaurantId || "").trim();
-  const slug = normalizeDemoSlug(demoSlugRaw);
-  const demoName = String(demoNameRaw || "").trim();
+  const slug = normalizeDemoSlug(tenantSlugRaw);
+  const tenantName = String(tenantNameRaw || "").trim();
   const days = Number(expiresDaysRaw);
   const adminUsername = String(adminUsernameRaw || "").trim().toLowerCase();
   const adminPassword = String(adminPasswordRaw || "");
+  const demoMode = Boolean(isDemo);
+  const servicePlan = normalizeServicePlan(servicePlanRaw);
+  const webOnly = servicePlan === SERVICE_PLAN_WEB;
 
   if (!tpl) {
     throw new Error("Falta templateRestaurantId (UUID del restaurante plantilla).");
@@ -528,19 +633,21 @@ async function createDemoFromTemplate({
     throw new Error("templateRestaurantId no es un UUID válido.");
   }
   if (!slug || slug.length < 2) {
-    throw new Error("demo_slug demasiado corto (mínimo 2 caracteres).");
+    throw new Error("tenant slug demasiado corto (mínimo 2 caracteres).");
   }
   if (slug.length > 64) {
-    throw new Error("demo_slug demasiado largo (máximo 64).");
+    throw new Error("tenant slug demasiado largo (máximo 64).");
   }
   if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug)) {
-    throw new Error("demo_slug inválido: usá minúsculas, números y guiones (sin espacios).");
+    throw new Error("slug inválido: usá minúsculas, números y guiones (sin espacios).");
   }
-  if (!demoName) {
-    throw new Error("Falta el nombre del demo.");
+  if (!tenantName) {
+    throw new Error("Falta el nombre del restaurante.");
   }
-  if (!Number.isFinite(days) || days < 1 || days > 366) {
-    throw new Error("expiresDays debe ser un número entre 1 y 366.");
+  if (demoMode) {
+    if (!Number.isFinite(days) || days < 1 || days > 366) {
+      throw new Error("expiresDays debe ser un número entre 1 y 366.");
+    }
   }
   if (adminUsername.length < 2) {
     throw new Error("Usuario admin demasiado corto.");
@@ -555,10 +662,10 @@ async function createDemoFromTemplate({
     .eq("demo_slug", slug)
     .maybeSingle();
   if (dupErr) {
-    throw new Error(`No se pudo verificar demo_slug: ${dupErr.message}`);
+    throw new Error(`No se pudo verificar slug: ${dupErr.message}`);
   }
   if (dup) {
-    throw new Error("Ese demo_slug ya existe.");
+    throw new Error("Ese slug ya existe.");
   }
 
   const { data: template, error: tErr } = await supabase
@@ -575,7 +682,7 @@ async function createDemoFromTemplate({
     throw new Error("Plantilla no encontrada.");
   }
 
-  const requestedWa = normalizeOptionalDemoWhatsApp(demoWhatsappNumberRaw);
+  const requestedWa = normalizeOptionalDemoWhatsApp(whatsappNumberRaw);
   let whatsappForInsert;
   if (requestedWa) {
     const { data: waDup, error: waDupErr } = await supabase
@@ -587,19 +694,23 @@ async function createDemoFromTemplate({
       throw new Error(`No se pudo verificar WhatsApp: ${waDupErr.message}`);
     }
     if (waDup) {
-      throw new Error(
-        "Ese número de WhatsApp ya está en uso por otro restaurante. Probá con otro o dejá el campo vacío para uno automático."
-      );
+      throw new Error("Ese número de WhatsApp ya está en uso por otro restaurante.");
     }
     whatsappForInsert = requestedWa;
-  } else {
+  } else if (webOnly) {
+    whatsappForInsert = uniquePlaceholderWhatsAppForWebOnly(slug);
+  } else if (demoMode) {
     whatsappForInsert = uniquePlaceholderWhatsAppForDemo();
+  } else {
+    throw new Error("Plan completo: indicá whatsappNumber (único en la base).");
   }
 
-  const expiresIso = new Date(Date.now() + Math.floor(days) * 86400000).toISOString();
+  const expiresIso = demoMode
+    ? new Date(Date.now() + Math.floor(days) * 86400000).toISOString()
+    : null;
   const insertRow = {
-    name: demoName,
-    public_name: demoName,
+    name: tenantName,
+    public_name: tenantName,
     whatsapp_number: whatsappForInsert,
     opening_hours: template.opening_hours ?? null,
     policies: template.policies ?? null,
@@ -615,10 +726,10 @@ async function createDemoFromTemplate({
       Number.isFinite(Number(template.table_count)) && Number(template.table_count) >= 1
         ? Math.floor(Number(template.table_count))
         : 12,
-    metadata: metadataForDemoTenant(template.metadata),
+    metadata: metadataForServicePlan(template.metadata, servicePlan, { isDemo: demoMode }),
     demo_slug: slug,
     demo_expires_at: expiresIso,
-    is_demo: true
+    is_demo: demoMode
   };
 
   const { data: newRest, error: insErr } = await supabase
@@ -676,7 +787,7 @@ async function createDemoFromTemplate({
       role: "admin",
       restaurant_id: newId,
       is_active: true,
-      label: "Admin demo",
+      label: demoMode ? "Admin demo" : "Admin",
       updated_at: nowIso
     });
     if (duErr) {
@@ -685,9 +796,13 @@ async function createDemoFromTemplate({
 
     return {
       restaurantId: newId,
+      tenantSlug: slug,
       demoSlug: slug,
       demoExpiresAt: expiresIso,
+      isDemo: demoMode,
+      servicePlan,
       menuItemCount: rows.length,
+      whatsappNumber: whatsappForInsert,
       demoWhatsappNumber: whatsappForInsert
     };
   } catch (e) {
@@ -698,6 +813,20 @@ async function createDemoFromTemplate({
     }
     throw e;
   }
+}
+
+async function createDemoFromTemplate(params) {
+  return createTenantFromTemplate({
+    templateRestaurantId: params.templateRestaurantId,
+    tenantSlug: params.demoSlug,
+    tenantName: params.demoName,
+    isDemo: true,
+    expiresDays: params.expiresDays,
+    adminUsername: params.adminUsername,
+    adminPassword: params.adminPassword,
+    whatsappNumber: params.demoWhatsappNumber,
+    servicePlan: params.servicePlan
+  });
 }
 
 function isUuidString(value) {
@@ -820,6 +949,8 @@ module.exports = {
   getRestaurantNameById,
   getOrderAwaitingCustomerTotalConfirm,
   createDemoFromTemplate,
+  createTenantFromTemplate,
   deleteDemoBySlug,
-  verifyDashboardUserCredentials
+  verifyDashboardUserCredentials,
+  verifyDashboardSession
 };

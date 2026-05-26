@@ -4,6 +4,7 @@
  */
 
 export const RESTOBOT_DB_LOGIN_API_PATH = "/api/dashboard/db-login";
+export const RESTOBOT_VALIDATE_SESSION_API_PATH = "/api/dashboard/validate-session";
 
 export function isHostedOnVercelOrNetlify() {
   const h = String(window.location.hostname || "").toLowerCase();

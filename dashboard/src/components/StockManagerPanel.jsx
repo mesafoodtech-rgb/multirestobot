@@ -8,6 +8,7 @@ import {
   parseQuantityValueByUnit
 } from "../lib/stockAlerts";
 import { supabase } from "../supabaseClient";
+import { withRestaurantScope } from "../lib/restaurantTenant";
 
 const STOCK_UNIT_OPTIONS = ["KG", "G", "L", "ML", "UNIDAD", "PAQUETE"];
 const STOCK_AI_PATH = "/api/dashboard/stock/recipe-ai";
@@ -520,10 +521,10 @@ export default function StockManagerPanel({ restaurantId, onLowStockCountChange 
       updated_at: new Date().toISOString()
     };
     if (!nameUnchanged) patch.name = normalizedName;
-    const { data, error } = await supabase
-      .from("stock_items")
-      .update(patch)
-      .eq("id", item.id)
+    const { data, error } = await withRestaurantScope(
+      supabase.from("stock_items").update(patch).eq("id", item.id),
+      restaurantId
+    )
       .select("id, name, current_stock, unit, low_stock_threshold, updated_at")
       .single();
     setSavingStockId(null);
@@ -574,14 +575,17 @@ export default function StockManagerPanel({ restaurantId, onLowStockCountChange 
     setStockError("");
     setStockFlash("");
     setSavingStockId(item.id);
-    const { data, error } = await supabase
-      .from("stock_items")
-      .update({
-        current_stock: currentStock,
-        unit,
-        updated_at: new Date().toISOString()
-      })
-      .eq("id", item.id)
+    const { data, error } = await withRestaurantScope(
+      supabase
+        .from("stock_items")
+        .update({
+          current_stock: currentStock,
+          unit,
+          updated_at: new Date().toISOString()
+        })
+        .eq("id", item.id),
+      restaurantId
+    )
       .select("id, name, current_stock, unit, low_stock_threshold, updated_at")
       .single();
     setSavingStockId(null);
@@ -614,13 +618,16 @@ export default function StockManagerPanel({ restaurantId, onLowStockCountChange 
     setStockError("");
     setStockFlash("");
     setSavingStockId(item.id);
-    const { data, error } = await supabase
-      .from("stock_items")
-      .update({
-        low_stock_threshold: parsedThreshold,
-        updated_at: new Date().toISOString()
-      })
-      .eq("id", item.id)
+    const { data, error } = await withRestaurantScope(
+      supabase
+        .from("stock_items")
+        .update({
+          low_stock_threshold: parsedThreshold,
+          updated_at: new Date().toISOString()
+        })
+        .eq("id", item.id),
+      restaurantId
+    )
       .select("id, name, current_stock, unit, low_stock_threshold, updated_at")
       .single();
     setSavingStockId(null);
@@ -663,7 +670,10 @@ export default function StockManagerPanel({ restaurantId, onLowStockCountChange 
     setStockError("");
     setStockFlash("");
     setSavingStockId(item.id);
-    const { error } = await supabase.from("stock_items").delete().eq("id", item.id);
+    const { error } = await withRestaurantScope(
+      supabase.from("stock_items").delete().eq("id", item.id),
+      restaurantId
+    );
     setSavingStockId(null);
     if (error) {
       setStockError(`No se pudo eliminar ${item.name}: ${error.message}`);
@@ -759,14 +769,28 @@ export default function StockManagerPanel({ restaurantId, onLowStockCountChange 
       );
 
       if (editingRecipeId) {
-        const { error: updateError } = await supabase
+        const { data: ownedRecipe, error: ownErr } = await supabase
           .from("stock_recipes")
-          .update({
-            name,
-            preparation: preparation || null,
-            updated_at: new Date().toISOString()
-          })
-          .eq("id", editingRecipeId);
+          .select("id")
+          .eq("id", editingRecipeId)
+          .eq("restaurant_id", restaurantId)
+          .maybeSingle();
+        if (ownErr) throw ownErr;
+        if (!ownedRecipe?.id) {
+          throw new Error("La receta no pertenece a este restaurante.");
+        }
+
+        const { error: updateError } = await withRestaurantScope(
+          supabase
+            .from("stock_recipes")
+            .update({
+              name,
+              preparation: preparation || null,
+              updated_at: new Date().toISOString()
+            })
+            .eq("id", editingRecipeId),
+          restaurantId
+        );
         if (updateError) throw updateError;
 
         const { error: deleteIngredientsError } = await supabase
@@ -858,7 +882,10 @@ export default function StockManagerPanel({ restaurantId, onLowStockCountChange 
     setRecipeError("");
     setRecipeFlash("");
     setDeletingRecipeId(recipe.id);
-    const { error } = await supabase.from("stock_recipes").delete().eq("id", recipe.id);
+    const { error } = await withRestaurantScope(
+      supabase.from("stock_recipes").delete().eq("id", recipe.id),
+      restaurantId
+    );
     setDeletingRecipeId(null);
     if (error) {
       setRecipeError(`No se pudo eliminar la receta ${recipe.name}: ${error.message}`);
@@ -942,13 +969,16 @@ export default function StockManagerPanel({ restaurantId, onLowStockCountChange 
     try {
       const results = await Promise.all(
         pendingUpdates.map(({ item, nextStock }) =>
-          supabase
-            .from("stock_items")
-            .update({
-              current_stock: nextStock,
-              updated_at: new Date().toISOString()
-            })
-            .eq("id", item.id)
+          withRestaurantScope(
+            supabase
+              .from("stock_items")
+              .update({
+                current_stock: nextStock,
+                updated_at: new Date().toISOString()
+              })
+              .eq("id", item.id),
+            restaurantId
+          )
         )
       );
       const failedUpdate = results.find((result) => result?.error);

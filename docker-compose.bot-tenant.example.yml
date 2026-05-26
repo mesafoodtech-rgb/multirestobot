@@ -1,0 +1,17 @@
+# Ejemplo multirestobot: un servicio por restaurante con bot WhatsApp (aislamiento de .wwebjs_auth).
+# Los tenants con metadata.service_plan = "web" NO necesitan ningún servicio de esta lista.
+
+services:
+  multirestobot-wa-cliente-a:
+    build: .
+    restart: always
+    env_file:
+      - .env
+    environment:
+      WHATSAPP_BOT_ENABLED: "1"
+      WWEBJS_CLIENT_ID: cliente-a
+      WWEBJS_AUTH_PATH: /app/.wwebjs_auth
+    ports:
+      - "3012:3000"
+    volumes:
+      - ./wwebjs_auth/cliente-a:/app/.wwebjs_auth

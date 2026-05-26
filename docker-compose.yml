@@ -1,32 +1,34 @@
+# Proyecto multirestobot (no confundir con el repo / despliegue restobot).
+# En el mismo servidor que restobot, estos puertos evitan choque con 3001 y 5173.
+name: multirestobot
+
 services:
   # Código del bot está en la imagen (no hay bind mount de ./). Tras cambiar index.js/database.js:
-  # docker compose build restobot && docker compose up -d restobot
-  restobot:
+  # docker compose build multirestobot && docker compose up -d multirestobot
+  multirestobot:
     build: .
-    container_name: restobot-whatsapp
+    container_name: multirestobot-whatsapp
     restart: always
     env_file:
       - .env
     ports:
-      - "3001:3000"
+      - "3011:3000"
     volumes:
       - ./.wwebjs_auth:/app/.wwebjs_auth
       - ./tmp_audio:/app/tmp_audio
 
   dashboard:
     build: ./dashboard
-    container_name: restobot-dashboard
+    container_name: multirestobot-dashboard
     restart: always
     depends_on:
-      - restobot
+      - multirestobot
     environment:
-      # El browser llama :5173/api/…; Vite debe reenviar al contenedor del bot (puerto interno 3000).
-      # No uses 127.0.0.1:3001 aquí: dentro del contenedor dashboard eso no es el bot y el proxy falla (500).
-      VITE_DEV_API_PROXY_TARGET: http://restobot:3000
+      # El browser llama :5183/api/…; Vite reenvía al servicio del bot (puerto interno 3000).
+      VITE_DEV_API_PROXY_TARGET: http://multirestobot:3000
     ports:
-      - "5173:5173"
+      - "5183:5173"
     volumes:
       - ./dashboard:/app
-      # node_modules en volumen aparte: el entrypoint del dashboard ejecuta npm install al iniciar.
       - /app/node_modules
       - ./.env:/app/.env:ro

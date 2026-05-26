@@ -39,11 +39,24 @@ import MesaQrLinksPanel from "../components/MesaQrLinksPanel";
 import StockManagerPanel from "../components/StockManagerPanel";
 import QrMenuPanel from "../components/QrMenuPanel";
 import OrdersDateRangeCalendar from "../components/OrdersDateRangeCalendar";
-import { resolveRestaurantForDashboard } from "../lib/restaurantTenant";
+import { resolveRestaurantForDashboard, withRestaurantScope } from "../lib/restaurantTenant";
+import {
+  readServicePlanFromMetadata,
+  servicePlanLabel,
+  tenantUsesWhatsappBot
+} from "../lib/tenantServices";
 import { useDemoTenant } from "../lib/DemoTenantContext";
 import { isValidPublicDashboardBaseUrl, normalizePublicDashboardBaseUrlInput } from "../lib/publicDashboardUrl";
 import { countLowStockItems } from "../lib/stockAlerts";
 import { getSession } from "../lib/auth";
+import {
+  isAdminTabEnabled,
+  pickFirstEnabledAdminTab,
+  readMenuPanelEnabled,
+  readOrdersPanelEnabled,
+  readSettingsPanelEnabled,
+  readUsersPanelEnabled
+} from "../lib/adminPanelTabs";
 import { WEEKDAY_OPTIONS } from "../lib/deliverySchedule";
 
 const CANCEL_REVERT_WINDOW_MS = 30 * 60 * 1000;
@@ -370,15 +383,6 @@ export default function AdminApp({ onLogout }) {
     getSession()?.role === "maestro" ? "maestro" : "orders"
   );
 
-  useEffect(() => {
-    if (activeTab === "maestro" && !isMaestro) setActiveTab("orders");
-  }, [activeTab, isMaestro]);
-
-  useEffect(() => {
-    if (!isEncargado) return;
-    const hidden = new Set(["settings", "users", "stats", "qrmenu", "mesaqr", "stock", "maestro"]);
-    if (hidden.has(activeTab)) setActiveTab("orders");
-  }, [isEncargado, activeTab]);
   const [orders, setOrders] = useState([]);
   const [deliveryUserLabels, setDeliveryUserLabels] = useState({});
   const ORDERS_PAGE_SIZE = 30;
@@ -455,6 +459,10 @@ export default function AdminApp({ onLogout }) {
   const [cashEnabled, setCashEnabled] = useState(true);
   const [mercadoPagoEnabled, setMercadoPagoEnabled] = useState(true);
   const [statsEnabled, setStatsEnabled] = useState(true);
+  const [ordersPanelEnabled, setOrdersPanelEnabled] = useState(true);
+  const [menuPanelEnabled, setMenuPanelEnabled] = useState(true);
+  const [settingsPanelEnabled, setSettingsPanelEnabled] = useState(true);
+  const [usersPanelEnabled, setUsersPanelEnabled] = useState(true);
   const [stockPanelEnabled, setStockPanelEnabled] = useState(true);
   const [lowStockAlertCount, setLowStockAlertCount] = useState(0);
   const [loadingConfig, setLoadingConfig] = useState(false);
@@ -466,21 +474,44 @@ export default function AdminApp({ onLogout }) {
 
   const statsConfig = useMemo(() => resolveStatsConfig(restaurantMetadata), [restaurantMetadata]);
 
-  useEffect(() => {
-    if (activeTab === "stats" && !statsEnabled) setActiveTab("orders");
-  }, [activeTab, statsEnabled]);
+  const adminTabCtx = useMemo(
+    () => ({
+      isMaestro,
+      canAccessFullAdminPanel,
+      ordersPanelEnabled,
+      menuPanelEnabled,
+      qrMenuEnabled,
+      mesaQrEnabled,
+      stockPanelEnabled,
+      statsEnabled,
+      usersPanelEnabled,
+      settingsPanelEnabled
+    }),
+    [
+      isMaestro,
+      canAccessFullAdminPanel,
+      ordersPanelEnabled,
+      menuPanelEnabled,
+      qrMenuEnabled,
+      mesaQrEnabled,
+      stockPanelEnabled,
+      statsEnabled,
+      usersPanelEnabled,
+      settingsPanelEnabled
+    ]
+  );
 
   useEffect(() => {
-    if (activeTab === "qrmenu" && !qrMenuEnabled) setActiveTab("orders");
-  }, [activeTab, qrMenuEnabled]);
-
-  useEffect(() => {
-    if (activeTab === "mesaqr" && !mesaQrEnabled) setActiveTab("orders");
-  }, [activeTab, mesaQrEnabled]);
-
-  useEffect(() => {
-    if (activeTab === "stock" && !stockPanelEnabled) setActiveTab("orders");
-  }, [activeTab, stockPanelEnabled]);
+    if (activeTab === "maestro" && !isMaestro) {
+      const next = pickFirstEnabledAdminTab(adminTabCtx);
+      if (next) setActiveTab(next);
+      return;
+    }
+    if (!isAdminTabEnabled(activeTab, adminTabCtx)) {
+      const next = pickFirstEnabledAdminTab(adminTabCtx);
+      if (next && next !== activeTab) setActiveTab(next);
+    }
+  }, [activeTab, isMaestro, adminTabCtx]);
 
   useEffect(() => {
     if (!restaurantId || !stockPanelEnabled) {
@@ -800,13 +831,20 @@ export default function AdminApp({ onLogout }) {
     setMesaQrEnabled(metadataObj.mesa_qr_enabled !== false);
     setQrMenuEnabled(metadataObj.qr_menu_enabled !== false);
     setWaiterFulfillmentSelectorEnabled(metadataObj.waiter_fulfillment_selector_enabled === true);
-    setBotRuntimeSwitchesVisible(metadataObj.bot_runtime_switches_visible === true);
-    setBotWhatsappEnabled(metadataObj.bot_whatsapp_enabled !== false);
+    const plan = readServicePlanFromMetadata(metadataObj);
+    setBotRuntimeSwitchesVisible(
+      tenantUsesWhatsappBot(metadataObj) && metadataObj.bot_runtime_switches_visible === true
+    );
+    setBotWhatsappEnabled(tenantUsesWhatsappBot(metadataObj) && metadataObj.bot_whatsapp_enabled !== false);
     setBotEnforceOpeningHours(metadataObj.bot_enforce_opening_hours !== false);
     setCashEnabled(data.cash_enabled !== false);
     setMercadoPagoEnabled(data.mercadopago_enabled !== false);
     setStatsEnabled(data.stats_enabled !== false);
     setStockPanelEnabled(metadataObj.stock_panel_enabled !== false);
+    setOrdersPanelEnabled(readOrdersPanelEnabled(metadataObj));
+    setMenuPanelEnabled(readMenuPanelEnabled(metadataObj));
+    setSettingsPanelEnabled(readSettingsPanelEnabled(metadataObj));
+    setUsersPanelEnabled(readUsersPanelEnabled(metadataObj));
     setLoadingConfig(false);
   }
 
@@ -866,11 +904,17 @@ export default function AdminApp({ onLogout }) {
       restaurantMetadata && typeof restaurantMetadata === "object" && !Array.isArray(restaurantMetadata)
         ? restaurantMetadata
         : {};
+    const plan = readServicePlanFromMetadata(metadataBase);
     const nextMetadata = {
       ...metadataBase,
-      bot_runtime_switches_visible: Boolean(botRuntimeSwitchesVisible),
-      bot_whatsapp_enabled: Boolean(botWhatsappEnabled),
-      bot_enforce_opening_hours: Boolean(botEnforceOpeningHours),
+      service_plan: plan,
+      bot_runtime_switches_visible: tenantUsesWhatsappBot(metadataBase)
+        ? Boolean(botRuntimeSwitchesVisible)
+        : false,
+      bot_whatsapp_enabled: tenantUsesWhatsappBot(metadataBase) ? Boolean(botWhatsappEnabled) : false,
+      bot_enforce_opening_hours: tenantUsesWhatsappBot(metadataBase)
+        ? Boolean(botEnforceOpeningHours)
+        : false,
       business_hours: canBuildBusinessHours
         ? {
             open_days: openingDays,
@@ -1090,6 +1134,33 @@ export default function AdminApp({ onLogout }) {
     return { ok: true };
   }
 
+  async function setAdminPanelMetadataFlag(flagKey, nextEnabled, errorLabel) {
+    if (!restaurantId) {
+      setError("No hay restaurante cargado.");
+      return { ok: false };
+    }
+    setError("");
+    const nextMetadata = {
+      ...(restaurantMetadata && typeof restaurantMetadata === "object" ? restaurantMetadata : {}),
+      [flagKey]: Boolean(nextEnabled)
+    };
+    const { error: updateError } = await supabase
+      .from("restaurants")
+      .update({ metadata: nextMetadata })
+      .eq("id", restaurantId);
+    if (updateError) {
+      setError(`No se pudo guardar ${errorLabel}: ${updateError.message}`);
+      return { ok: false, error: updateError };
+    }
+    setRestaurantMetadata(nextMetadata);
+    const on = Boolean(nextEnabled);
+    if (flagKey === "orders_panel_enabled") setOrdersPanelEnabled(on);
+    else if (flagKey === "menu_panel_enabled") setMenuPanelEnabled(on);
+    else if (flagKey === "settings_panel_enabled") setSettingsPanelEnabled(on);
+    else if (flagKey === "users_panel_enabled") setUsersPanelEnabled(on);
+    return { ok: true };
+  }
+
   async function saveStatsMetricsConfig(draft) {
     if (!restaurantId) {
       setError("No hay restaurante cargado.");
@@ -1136,11 +1207,15 @@ export default function AdminApp({ onLogout }) {
   }
 
   async function updateOrderStatus(orderId, nextStatus) {
+    if (!restaurantId) {
+      setError("No se pudo identificar el restaurante.");
+      return;
+    }
     setSavingOrderId(orderId);
-    const { error: updateError } = await supabase
-      .from("orders")
-      .update({ status: nextStatus })
-      .eq("id", orderId);
+    const { error: updateError } = await withRestaurantScope(
+      supabase.from("orders").update({ status: nextStatus }).eq("id", orderId),
+      restaurantId
+    );
 
     if (updateError) {
       setError(`Error actualizando estado del pedido: ${updateError.message}`);
@@ -1171,11 +1246,14 @@ export default function AdminApp({ onLogout }) {
     if (normalizeOrderStatus(order) !== "delivered") {
       patch.status = "confirmed";
     }
-    const { data: updatedRow, error: updateError } = await supabase
-      .from("orders")
-      .update(patch)
-      .eq("id", order.id)
-      .neq("status", "cancelled")
+    const { data: updatedRow, error: updateError } = await withRestaurantScope(
+      supabase
+        .from("orders")
+        .update(patch)
+        .eq("id", order.id)
+        .neq("status", "cancelled"),
+      restaurantId
+    )
       .select("*")
       .maybeSingle();
 
@@ -1213,12 +1291,15 @@ export default function AdminApp({ onLogout }) {
     setError("");
     setSavingOrderId(order.id);
     const requestedAt = new Date().toISOString();
-    const { data: updatedRow, error: updateError } = await supabase
-      .from("orders")
-      .update({ pickup_ready_notify_requested_at: requestedAt })
-      .eq("id", order.id)
-      .eq("status", "confirmed")
-      .is("pickup_ready_customer_notified_at", null)
+    const { data: updatedRow, error: updateError } = await withRestaurantScope(
+      supabase
+        .from("orders")
+        .update({ pickup_ready_notify_requested_at: requestedAt })
+        .eq("id", order.id)
+        .eq("status", "confirmed")
+        .is("pickup_ready_customer_notified_at", null),
+      restaurantId
+    )
       .select("*")
       .maybeSingle();
 
@@ -1266,11 +1347,10 @@ export default function AdminApp({ onLogout }) {
       payment_status: "pending",
       payment_paid_at: null
     };
-    const { data: updatedRow, error: updateError } = await supabase
-      .from("orders")
-      .update(patch)
-      .eq("id", order.id)
-      .eq("payment_status", "paid")
+    const { data: updatedRow, error: updateError } = await withRestaurantScope(
+      supabase.from("orders").update(patch).eq("id", order.id).eq("payment_status", "paid"),
+      restaurantId
+    )
       .select("*")
       .maybeSingle();
 
@@ -1313,12 +1393,15 @@ export default function AdminApp({ onLogout }) {
       status: "delivered",
       delivered_at: new Date().toISOString()
     };
-    const { data: updatedRow, error: updateError } = await supabase
-      .from("orders")
-      .update(patch)
-      .eq("id", order.id)
-      .neq("status", "delivered")
-      .neq("status", "cancelled")
+    const { data: updatedRow, error: updateError } = await withRestaurantScope(
+      supabase
+        .from("orders")
+        .update(patch)
+        .eq("id", order.id)
+        .neq("status", "delivered")
+        .neq("status", "cancelled"),
+      restaurantId
+    )
       .select("*")
       .maybeSingle();
 
@@ -1364,11 +1447,10 @@ export default function AdminApp({ onLogout }) {
     if (order.delivery_issue_reason && !order.delivery_issue_acknowledged_at) {
       patch.delivery_issue_acknowledged_at = patch.cancelled_at;
     }
-    const { data: updatedRow, error: updateError } = await supabase
-      .from("orders")
-      .update(patch)
-      .eq("id", order.id)
-      .neq("status", "cancelled")
+    const { data: updatedRow, error: updateError } = await withRestaurantScope(
+      supabase.from("orders").update(patch).eq("id", order.id).neq("status", "cancelled"),
+      restaurantId
+    )
       .select("*")
       .maybeSingle();
 
@@ -1414,11 +1496,14 @@ export default function AdminApp({ onLogout }) {
 
     try {
       if (closeOnly) {
-        const { data: updatedRow, error: updateError } = await supabase
-          .from("orders")
-          .update({ delivery_issue_acknowledged_at: ackAt })
-          .eq("id", order.id)
-          .is("delivery_issue_acknowledged_at", null)
+        const { data: updatedRow, error: updateError } = await withRestaurantScope(
+          supabase
+            .from("orders")
+            .update({ delivery_issue_acknowledged_at: ackAt })
+            .eq("id", order.id)
+            .is("delivery_issue_acknowledged_at", null),
+          restaurantId
+        )
           .select("*")
           .maybeSingle();
 
@@ -1439,13 +1524,16 @@ export default function AdminApp({ onLogout }) {
           cancelled_at: ackAt,
           delivery_issue_acknowledged_at: ackAt
         };
-        const { data: updatedRow, error: updateError } = await supabase
-          .from("orders")
-          .update(patch)
-          .eq("id", order.id)
-          .neq("status", "cancelled")
-          .neq("status", "delivered")
-          .is("delivery_issue_acknowledged_at", null)
+        const { data: updatedRow, error: updateError } = await withRestaurantScope(
+          supabase
+            .from("orders")
+            .update(patch)
+            .eq("id", order.id)
+            .neq("status", "cancelled")
+            .neq("status", "delivered")
+            .is("delivery_issue_acknowledged_at", null),
+          restaurantId
+        )
           .select("*")
           .maybeSingle();
 
@@ -1501,11 +1589,10 @@ export default function AdminApp({ onLogout }) {
       patch.delivery_issue_acknowledged_at = null;
     }
 
-    const { data: updatedRow, error: updateError } = await supabase
-      .from("orders")
-      .update(patch)
-      .eq("id", order.id)
-      .eq("status", fromStatus)
+    const { data: updatedRow, error: updateError } = await withRestaurantScope(
+      supabase.from("orders").update(patch).eq("id", order.id).eq("status", fromStatus),
+      restaurantId
+    )
       .select("*")
       .maybeSingle();
 
@@ -1548,7 +1635,10 @@ export default function AdminApp({ onLogout }) {
       status: "delivery_fee_set"
     };
     const st = normalizeOrderStatus(order);
-    let updateQuery = supabase.from("orders").update(patch).eq("id", order.id);
+    let updateQuery = withRestaurantScope(
+      supabase.from("orders").update(patch).eq("id", order.id),
+      restaurantId
+    );
     if (st === "awaiting_delivery_fee") {
       updateQuery = updateQuery.eq("status", "awaiting_delivery_fee");
     } else if (st === "pending" && orderNeedsDeliveryFeeControls(order)) {
@@ -1608,7 +1698,10 @@ export default function AdminApp({ onLogout }) {
       delivery_denial_reason: reason
     };
     const st = normalizeOrderStatus(order);
-    let updateQuery = supabase.from("orders").update(patch).eq("id", order.id);
+    let updateQuery = withRestaurantScope(
+      supabase.from("orders").update(patch).eq("id", order.id),
+      restaurantId
+    );
     if (st === "awaiting_delivery_fee") {
       updateQuery = updateQuery.eq("status", "awaiting_delivery_fee");
     } else if (st === "pending" && orderNeedsDeliveryFeeControls(order)) {
@@ -1662,11 +1755,14 @@ export default function AdminApp({ onLogout }) {
   async function retryDeliveryDenialNotify(orderId) {
     setError("");
     setSavingOrderId(orderId);
-    const { error: updateError } = await supabase
-      .from("orders")
-      .update({ status: "delivery_denied" })
-      .eq("id", orderId)
-      .eq("status", "delivery_denial_notify_failed");
+    const { error: updateError } = await withRestaurantScope(
+      supabase
+        .from("orders")
+        .update({ status: "delivery_denied" })
+        .eq("id", orderId)
+        .eq("status", "delivery_denial_notify_failed"),
+      restaurantId
+    );
 
     if (updateError) {
       setError(`Error al reintentar aviso de cancelación: ${updateError.message}`);
@@ -1690,12 +1786,15 @@ export default function AdminApp({ onLogout }) {
     setError("");
     setSavingOrderId(order.id);
     const broadcastAt = new Date().toISOString();
-    const { data: updatedRow, error: updateError } = await supabase
-      .from("orders")
-      .update({ delivery_ready_broadcast_at: broadcastAt })
-      .eq("id", order.id)
-      .is("delivery_ready_broadcast_at", null)
-      .is("delivery_claimed_by_user_id", null)
+    const { data: updatedRow, error: updateError } = await withRestaurantScope(
+      supabase
+        .from("orders")
+        .update({ delivery_ready_broadcast_at: broadcastAt })
+        .eq("id", order.id)
+        .is("delivery_ready_broadcast_at", null)
+        .is("delivery_claimed_by_user_id", null),
+      restaurantId
+    )
       .select("*")
       .maybeSingle();
     if (updateError) {
@@ -1715,11 +1814,14 @@ export default function AdminApp({ onLogout }) {
   async function retryNotifyCustomer(orderId) {
     setError("");
     setSavingOrderId(orderId);
-    const { error: updateError } = await supabase
-      .from("orders")
-      .update({ status: "delivery_fee_set" })
-      .eq("id", orderId)
-      .eq("status", "notify_failed");
+    const { error: updateError } = await withRestaurantScope(
+      supabase
+        .from("orders")
+        .update({ status: "delivery_fee_set" })
+        .eq("id", orderId)
+        .eq("status", "notify_failed"),
+      restaurantId
+    );
 
     if (updateError) {
       setError(`Error al reintentar: ${updateError.message}`);
@@ -1893,7 +1995,10 @@ export default function AdminApp({ onLogout }) {
       Object.prototype.hasOwnProperty.call(values, "category")
         ? { ...values, category: normalizeMenuCategoryForStorage(values.category) }
         : values;
-    const { error: updateError } = await supabase.from("menu_items").update(nextValues).eq("id", itemId);
+    const { error: updateError } = await withRestaurantScope(
+      supabase.from("menu_items").update(nextValues).eq("id", itemId),
+      restaurantId
+    );
     if (updateError) {
       setError(`Error guardando item: ${updateError.message}`);
       setSavingItemId(null);
@@ -1992,7 +2097,10 @@ export default function AdminApp({ onLogout }) {
 
   async function deleteMenuItem(itemId) {
     setSavingItemId(itemId);
-    const { error: deleteError } = await supabase.from("menu_items").delete().eq("id", itemId);
+    const { error: deleteError } = await withRestaurantScope(
+      supabase.from("menu_items").delete().eq("id", itemId),
+      restaurantId
+    );
     if (deleteError) {
       setError(`Error eliminando producto: ${deleteError.message}`);
       setSavingItemId(null);
@@ -2035,6 +2143,7 @@ export default function AdminApp({ onLogout }) {
         </header>
 
         <div className="mb-5 flex flex-wrap gap-3">
+          {ordersPanelEnabled ? (
           <button
             type="button"
             onClick={() => setActiveTab("orders")}
@@ -2046,6 +2155,8 @@ export default function AdminApp({ onLogout }) {
           >
             Pedidos
           </button>
+          ) : null}
+          {menuPanelEnabled ? (
           <button
             type="button"
             onClick={() => setActiveTab("menu")}
@@ -2057,6 +2168,7 @@ export default function AdminApp({ onLogout }) {
           >
             Gestor de Menu
           </button>
+          ) : null}
           {canAccessFullAdminPanel && qrMenuEnabled ? (
             <button
               type="button"
@@ -2120,7 +2232,7 @@ export default function AdminApp({ onLogout }) {
               Estadísticas
             </button>
           ) : null}
-          {canAccessFullAdminPanel ? (
+          {canAccessFullAdminPanel && usersPanelEnabled ? (
             <button
               type="button"
               onClick={() => setActiveTab("users")}
@@ -2133,7 +2245,7 @@ export default function AdminApp({ onLogout }) {
               Usuarios
             </button>
           ) : null}
-          {canAccessFullAdminPanel ? (
+          {canAccessFullAdminPanel && settingsPanelEnabled ? (
             <button
               type="button"
               onClick={() => setActiveTab("settings")}
@@ -2167,7 +2279,18 @@ export default function AdminApp({ onLogout }) {
           </div>
         ) : null}
 
-        {activeTab === "orders" ? (
+        {!isAdminTabEnabled(activeTab, adminTabCtx) ? (
+          <section className="rounded-xl border border-slate-700 bg-slate-900 p-6">
+            <p className="text-sm text-slate-300">
+              No hay módulos del panel habilitados para este restaurante.
+            </p>
+            {isMaestro ? (
+              <p className="mt-2 text-xs text-slate-500">
+                Activá al menos una pestaña en la sección Maestro → Pestañas principales del dashboard.
+              </p>
+            ) : null}
+          </section>
+        ) : activeTab === "orders" ? (
           <section className="space-y-4">
             <OrdersFilterBar
               filters={orderFilters}
@@ -3141,7 +3264,7 @@ export default function AdminApp({ onLogout }) {
               onSaveStatsConfig={saveStatsMetricsConfig}
             />
           </div>
-        ) : activeTab === "users" ? (
+        ) : activeTab === "users" && usersPanelEnabled ? (
           <DashboardUsersPanel
             restaurantId={restaurantId}
             scopeByRestaurant={Boolean(demoSlug)}
@@ -3160,6 +3283,11 @@ export default function AdminApp({ onLogout }) {
             mercadoPagoEnabled={mercadoPagoEnabled}
             statsEnabled={statsEnabled}
             stockPanelEnabled={stockPanelEnabled}
+            ordersPanelEnabled={ordersPanelEnabled}
+            menuPanelEnabled={menuPanelEnabled}
+            settingsPanelEnabled={settingsPanelEnabled}
+            usersPanelEnabled={usersPanelEnabled}
+            onAdminPanelToggle={setAdminPanelMetadataFlag}
             tableCount={Math.min(
               500,
               Math.max(1, parseInt(String(restaurantConfig.table_count || "12").trim(), 10) || 12)
@@ -3177,14 +3305,22 @@ export default function AdminApp({ onLogout }) {
             restaurantMetadata={restaurantMetadata}
             onPublicDashboardBaseUrlSave={savePublicDashboardBaseUrl}
           />
-        ) : (
+        ) : activeTab === "settings" && settingsPanelEnabled ? (
           <section className="space-y-4">
             <div className="rounded-xl border border-slate-700 bg-slate-900 p-5">
               <h2 className="text-sm font-semibold text-slate-200">
                 Configuración del restaurante
               </h2>
-              <p className="text-xs text-slate-400">
-                Horario, ubicación, zonas de delivery y políticas que el negocio usa al atender consultas de clientes.
+              <p className="mt-2 text-xs text-slate-400">
+                Horario, ubicación, zonas de delivery y políticas. Plan actual:{" "}
+                <span className="font-semibold text-emerald-400/90">
+                  {servicePlanLabel(readServicePlanFromMetadata(restaurantMetadata))}
+                </span>
+                {!tenantUsesWhatsappBot(restaurantMetadata) ? (
+                  <span className="block mt-1 text-cyan-200/80">
+                    Este local no incluye bot de WhatsApp: no usa sesión wwebjs ni almacenamiento del bot.
+                  </span>
+                ) : null}
               </p>
             </div>
 
@@ -3345,7 +3481,7 @@ export default function AdminApp({ onLogout }) {
                   </div>
                 </div>
 
-                {botRuntimeSwitchesVisible ? (
+                {tenantUsesWhatsappBot(restaurantMetadata) && botRuntimeSwitchesVisible ? (
                   <div className="space-y-3 rounded-lg border border-slate-700 bg-slate-950/60 p-4 text-sm">
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <div className="min-w-0 flex-1">
@@ -3510,7 +3646,7 @@ export default function AdminApp({ onLogout }) {
               </form>
             )}
           </section>
-        )}
+        ) : null}
       </div>
       {confirmDialog ? (
         <ConfirmModal dialog={confirmDialog} onResolve={handleConfirmDialog} />

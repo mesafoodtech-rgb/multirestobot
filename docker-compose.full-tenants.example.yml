@@ -1,0 +1,102 @@
+# Ejemplo: 3 clientes plan FULL (+ N locales solo web sin entrar aquí).
+#
+# Arquitectura:
+#   · api          → HTTP (mesa, maestro, login API). Sin Chromium. Puerto 3011.
+#   · dashboard    → Panel Vite. Proxy API → servicio "api".
+#   · wa-<slug>    → Un contenedor por número WhatsApp (wwebjs + QR propio).
+#
+# Uso:
+#   cp docker-compose.full-tenants.example.yml docker-compose.override.yml
+#   # Editar slugs, puertos y comentar servicios que no uses.
+#   mkdir -p wwebjs_auth/pizzeria-centro wwebjs_auth/sushi-norte wwebjs_auth/bar-sur
+#   docker compose build api
+#   docker compose up -d
+#   docker compose logs -f wa-pizzeria-centro   # escanear QR de ese local
+#
+# En Supabase cada local FULL debe tener:
+#   demo_slug = 'pizzeria-centro' (mismo string que WWEBJS_CLIENT_ID)
+#   metadata.service_plan = 'full'
+#   whatsapp_number = teléfono real que escaneás en ESE contenedor (único en la tabla)
+
+name: multirestobot
+
+services:
+  # --- API compartida (todos los tenants web + full) ---
+  api:
+    build: .
+    container_name: multirestobot-api
+    restart: always
+    env_file:
+      - .env
+    environment:
+      WHATSAPP_BOT_ENABLED: "0"
+    ports:
+      - "3011:3000"
+    volumes:
+      - ./tmp_audio:/app/tmp_audio
+
+  dashboard:
+    build: ./dashboard
+    container_name: multirestobot-dashboard
+    restart: always
+    depends_on:
+      - api
+    environment:
+      VITE_DEV_API_PROXY_TARGET: http://api:3000
+    ports:
+      - "5183:5173"
+    volumes:
+      - ./dashboard:/app
+      - /app/node_modules
+      - ./.env:/app/.env:ro
+
+  # --- Cliente full #1: reemplazá el slug por el de Supabase ---
+  wa-pizzeria-centro:
+    build: .
+    container_name: multirestobot-wa-pizzeria-centro
+    restart: always
+    env_file:
+      - .env
+    environment:
+      WHATSAPP_BOT_ENABLED: "1"
+      WWEBJS_CLIENT_ID: pizzeria-centro
+      WWEBJS_AUTH_PATH: /app/.wwebjs_auth
+    # Sin puerto público: solo WhatsApp. Descomentá para depurar HTTP local:
+    # ports:
+    #   - "3012:3000"
+    volumes:
+      - ./wwebjs_auth/pizzeria-centro:/app/.wwebjs_auth
+      - ./tmp_audio:/app/tmp_audio
+
+  # --- Cliente full #2 ---
+  wa-sushi-norte:
+    build: .
+    container_name: multirestobot-wa-sushi-norte
+    restart: always
+    env_file:
+      - .env
+    environment:
+      WHATSAPP_BOT_ENABLED: "1"
+      WWEBJS_CLIENT_ID: sushi-norte
+      WWEBJS_AUTH_PATH: /app/.wwebjs_auth
+    volumes:
+      - ./wwebjs_auth/sushi-norte:/app/.wwebjs_auth
+      - ./tmp_audio:/app/tmp_audio
+
+  # --- Cliente full #3 ---
+  wa-bar-sur:
+    build: .
+    container_name: multirestobot-wa-bar-sur
+    restart: always
+    env_file:
+      - .env
+    environment:
+      WHATSAPP_BOT_ENABLED: "1"
+      WWEBJS_CLIENT_ID: bar-sur
+      WWEBJS_AUTH_PATH: /app/.wwebjs_auth
+    volumes:
+      - ./wwebjs_auth/bar-sur:/app/.wwebjs_auth
+      - ./tmp_audio:/app/tmp_audio
+
+  # No uses el servicio "multirestobot" del docker-compose.yml base a la vez que este override
+  # (evitás dos APIs o dos sesiones WA en el mismo puerto/carpeta).

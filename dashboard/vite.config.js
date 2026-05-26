@@ -110,7 +110,7 @@ export default defineConfig(({ mode }) => {
     mesaApiPort,
     "3000"
   );
-  /** En Docker (Vite en contenedor): VITE_DEV_API_PROXY_TARGET=http://restobot:3000 (nombre del servicio). */
+  /** En Docker (Vite en contenedor): VITE_DEV_API_PROXY_TARGET=http://multirestobot:3000 (nombre del servicio). */
   const devApiProxyTarget = pick(
     process.env.VITE_DEV_API_PROXY_TARGET,
     fromFiles.VITE_DEV_API_PROXY_TARGET,

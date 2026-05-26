@@ -5,7 +5,11 @@ import {
   formatAllowedWeekdaysSentence
 } from "./deliverySchedule";
 import { fetchRestaurantByDemoSlug, normalizeDemoSlug } from "./restaurantTenant";
-import { buildRestobotHttpApiCandidates, RESTOBOT_DB_LOGIN_API_PATH } from "./restobotHttpApi";
+import {
+  buildRestobotHttpApiCandidates,
+  RESTOBOT_DB_LOGIN_API_PATH,
+  RESTOBOT_VALIDATE_SESSION_API_PATH
+} from "./restobotHttpApi";
 
 const SESSION_KEY = "restobot_session_v1";
 export const SESSION_REVALIDATE_MS = 120_000;
@@ -85,6 +89,46 @@ function normalizeSessionUpdatedAt(value) {
 }
 
 const DB_LOGIN_API_TIMEOUT_MS = 18_000;
+const VALIDATE_SESSION_API_TIMEOUT_MS = 12_000;
+
+async function tryValidateSessionViaBotApi(session) {
+  const urls = buildRestobotHttpApiCandidates(RESTOBOT_VALIDATE_SESSION_API_PATH);
+  if (!urls.length || !session?.userId) return null;
+  const body = {
+    userId: session.userId,
+    role: session.role,
+    restaurantId: session.restaurantId || null
+  };
+  const controller = new AbortController();
+  const t = window.setTimeout(() => controller.abort(), VALIDATE_SESSION_API_TIMEOUT_MS);
+  try {
+    for (const url of urls) {
+      try {
+        const res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+          signal: controller.signal
+        });
+        const text = await res.text();
+        let json;
+        try {
+          json = text ? JSON.parse(text) : {};
+        } catch {
+          continue;
+        }
+        if (json && typeof json === "object" && "ok" in json) {
+          return { res, json };
+        }
+      } catch {
+        continue;
+      }
+    }
+  } finally {
+    window.clearTimeout(t);
+  }
+  return null;
+}
 
 async function tryLoginDbUserViaBotApi(usernameNorm, password, restaurantId) {
   const urls = buildRestobotHttpApiCandidates(RESTOBOT_DB_LOGIN_API_PATH);
@@ -144,6 +188,25 @@ export async function validateStoredSession(session = getSession()) {
     return { ok: false, reason: "invalid_session" };
   }
 
+  const apiResult = await tryValidateSessionViaBotApi(session);
+  if (apiResult?.json?.ok === true && apiResult.json.user?.id) {
+    const u = apiResult.json.user;
+    const dbUpdatedAt = normalizeSessionUpdatedAt(u.updated_at);
+    const sessionUpdatedAt = normalizeSessionUpdatedAt(session.userUpdatedAt);
+    if (!sessionUpdatedAt) {
+      const nextSession = { ...session, userUpdatedAt: dbUpdatedAt };
+      saveSession(nextSession);
+      return { ok: true, session: nextSession };
+    }
+    if (dbUpdatedAt && dbUpdatedAt !== sessionUpdatedAt) {
+      return { ok: false, reason: "user_updated" };
+    }
+    return { ok: true, session };
+  }
+  if (apiResult?.json && apiResult.json.ok === false && apiResult.json.reason) {
+    return { ok: false, reason: apiResult.json.reason };
+  }
+
   const { data, error } = await supabase
     .from(DASHBOARD_USERS_TABLE)
     .select("id, role, is_active, updated_at, restaurant_id")
@@ -151,6 +214,13 @@ export async function validateStoredSession(session = getSession()) {
     .maybeSingle();
 
   if (error) {
+    if (error.code === "42501" || /permission denied|row-level security/i.test(error.message || "")) {
+      return {
+        ok: false,
+        reason: "session_check_unavailable",
+        error: "Revalidación de sesión no disponible. Volvé a iniciar sesión."
+      };
+    }
     return { ok: true, session, warning: error.message || "No se pudo validar la sesión." };
   }
   if (!data || !data.is_active) {

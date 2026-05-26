@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import { supabase } from "../supabaseClient";
 import { resolvePublicDashboardBaseUrl } from "../lib/publicDashboardUrl";
 import { buildRestobotHttpApiCandidates } from "../lib/restobotHttpApi";
+import { SERVICE_PLAN_FULL, SERVICE_PLAN_OPTIONS, SERVICE_PLAN_WEB } from "../lib/tenantServices";
 
 const MAESTRO_CREATE_DEMO_PATH = "/api/maestro/create-demo";
 const MAESTRO_DELETE_DEMO_PATH = "/api/maestro/delete-demo";
@@ -49,6 +50,11 @@ export default function MaestroPanel({
   statsEnabled,
   statsMetricsConfigurable,
   stockPanelEnabled,
+  ordersPanelEnabled,
+  menuPanelEnabled,
+  settingsPanelEnabled,
+  usersPanelEnabled,
+  onAdminPanelToggle,
   tableCount,
   restaurantMetadata,
   loadingRestaurant,
@@ -75,7 +81,10 @@ export default function MaestroPanel({
   const [demoAdminUser, setDemoAdminUser] = useState("");
   const [demoAdminPass, setDemoAdminPass] = useState("");
   const [demoWhatsapp, setDemoWhatsapp] = useState("");
+  const [demoServicePlan, setDemoServicePlan] = useState(SERVICE_PLAN_WEB);
   const [demoMaestroPass, setDemoMaestroPass] = useState("");
+  /** "demo" = vence en X días; "production" = cliente real sin demo_expires_at */
+  const [createTenantMode, setCreateTenantMode] = useState("demo");
   const [demoCreating, setDemoCreating] = useState(false);
   const [demoDeleting, setDemoDeleting] = useState(false);
   const [demoError, setDemoError] = useState("");
@@ -88,7 +97,7 @@ export default function MaestroPanel({
   const [templateListError, setTemplateListError] = useState("");
   const [tablesDraft, setTablesDraft] = useState(String(tableCount ?? 12));
   const [dashboardBaseDraft, setDashboardBaseDraft] = useState("");
-  const restartCommand = "docker compose restart restobot dashboard";
+  const restartCommand = "docker compose restart multirestobot dashboard";
 
   useEffect(() => {
     setTablesDraft(String(tableCount ?? 12));
@@ -351,6 +360,24 @@ export default function MaestroPanel({
     setLocalOk(nextEnabled ? "Gestor de stock visible en el dashboard." : "Gestor de stock oculto en el dashboard.");
   }
 
+  async function setAdminPanelFlag(flagKey, nextEnabled, errorLabel, okOn, okOff) {
+    if (savingDelivery || savingTables) return;
+    if (typeof onAdminPanelToggle !== "function") {
+      setLocalError(`No se pudo actualizar ${errorLabel}.`);
+      return;
+    }
+    setLocalError("");
+    setLocalOk("");
+    setSavingDelivery(true);
+    const result = await onAdminPanelToggle(flagKey, Boolean(nextEnabled), errorLabel);
+    setSavingDelivery(false);
+    if (!result?.ok) {
+      setLocalError(`No se pudo guardar ${errorLabel}.`);
+      return;
+    }
+    setLocalOk(nextEnabled ? okOn : okOff);
+  }
+
   async function setStatsMetricsConfigurableFlag(nextEnabled) {
     if (savingDelivery || savingTables) return;
     if (typeof onStatsMetricsConfigurableToggle !== "function") {
@@ -411,15 +438,16 @@ export default function MaestroPanel({
       setDemoError("Elegí el restaurante plantilla en la lista.");
       return;
     }
+    const isProductionClient = createTenantMode === "production";
     if (!slug || slug.length < 2) {
-      setDemoError("Slug del demo: mínimo 2 caracteres (minúsculas, guiones).");
+      setDemoError("Slug: mínimo 2 caracteres (minúsculas, guiones).");
       return;
     }
     if (!name) {
-      setDemoError("Falta el nombre del demo.");
+      setDemoError(isProductionClient ? "Falta el nombre del restaurante." : "Falta el nombre del demo.");
       return;
     }
-    if (!Number.isFinite(days) || days < 1 || days > 366) {
+    if (!isProductionClient && (!Number.isFinite(days) || days < 1 || days > 366)) {
       setDemoError("Días de validez: entre 1 y 366.");
       return;
     }
@@ -438,10 +466,6 @@ export default function MaestroPanel({
     const waDigits = String(demoWhatsapp || "")
       .replace(/\D/g, "")
       .trim();
-    if (demoWhatsapp.trim() && waDigits.length > 0 && waDigits.length < 8) {
-      setDemoError("WhatsApp del demo: al menos 8 dígitos, o dejá el campo vacío para uno automático.");
-      return;
-    }
 
     const urls = buildRestobotHttpApiCandidates(MAESTRO_CREATE_DEMO_PATH);
     if (!urls.length) {
@@ -451,14 +475,22 @@ export default function MaestroPanel({
       return;
     }
 
+    const plan = demoServicePlan === SERVICE_PLAN_FULL ? SERVICE_PLAN_FULL : SERVICE_PLAN_WEB;
+    if (plan === SERVICE_PLAN_FULL && waDigits.length > 0 && waDigits.length < 8) {
+      setDemoError("WhatsApp: al menos 8 dígitos para plan completo.");
+      return;
+    }
+
     const body = {
       maestroPassword: masterP,
       templateRestaurantId: tpl,
+      tenantMode: isProductionClient ? "production" : "demo",
       demoSlug: slug,
       demoName: name,
-      expiresDays: days,
       adminUsername: adminU,
       adminPassword: adminP,
+      servicePlan: plan,
+      ...(isProductionClient ? {} : { expiresDays: days }),
       ...(waDigits.length >= 8 ? { demoWhatsappNumber: waDigits } : {})
     };
 
@@ -577,7 +609,7 @@ export default function MaestroPanel({
               const le = String(lastErr || "");
               const fromApi = /no existe|no está marcado|demo_slug|inválid|marcado como demo/i.test(le);
               if (!fromApi) {
-                errOut = `${lastErr} Si la consola muestra solo «Not Found» sin mensaje JSON de la API, el backend no tiene desplegado POST /api/maestro/delete-demo (en la VPS: git pull, docker compose build restobot, docker compose up -d; en Vercel: redeploy).`;
+                errOut = `${lastErr} Si la consola muestra solo «Not Found» sin mensaje JSON de la API, el backend no tiene desplegado POST /api/maestro/delete-demo (en la VPS: git pull, docker compose build multirestobot, docker compose up -d; en Vercel: redeploy).`;
               }
             }
             setDemoDeleteError(errOut);
@@ -657,27 +689,51 @@ export default function MaestroPanel({
       </div>
 
       <div className="rounded-xl border border-cyan-500/30 bg-cyan-950/25 p-6 space-y-4">
-        <h3 className="text-sm font-semibold text-cyan-100">Nuevo demo (clonar desde plantilla)</h3>
+        <h3 className="text-sm font-semibold text-cyan-100">
+          {createTenantMode === "production" ? "Nuevo cliente (desde plantilla)" : "Nuevo demo (desde plantilla)"}
+        </h3>
         <p className="text-xs text-cyan-100/85 leading-relaxed">
-          Crea un restaurante con <code className="text-[11px]">demo_slug</code>, copia el menú desde el restaurante
-          plantilla que elijas en la lista y da de alta un usuario admin. Podés indicar un{" "}
-          <strong className="text-cyan-100">WhatsApp propio</strong> para el demo (único en la base); si lo dejás vacío,
-          el servidor asigna un número interno que no choca con la plantilla. El pedido lo procesa el backend Node (
-          <code className="text-[11px]">index.js</code>) con clave de servicio; en el{" "}
-          <code className="text-[11px]">.env</code> del servidor tenés que tener{" "}
-          <code className="text-[11px]">MAESTRO_PASSWORD</code> o{" "}
-          <code className="text-[11px]">VITE_MAESTRO_PASSWORD</code> (misma contraseña que usás para entrar como Maestro
-          en este panel).
+          Elegí el tipo de alta, la plantilla (se copia el menú), el slug <code className="text-[11px]">/d/…/login</code> y
+          un usuario admin. Requiere <code className="text-[11px]">MAESTRO_PASSWORD</code> en el servidor Node.
         </p>
-        <p className="text-xs text-cyan-200/70">
-          En Vercel, el POST se reenvía con <code className="text-[11px]">MESA_API_PROXY_ORIGIN</code> igual que los pedidos
-          QR y el recetario IA. Los invitados del demo entran con su enlace{" "}
-          <code className="text-[11px]">/d/slug/login</code>: en <code className="text-[11px]">/login</code> sin slug no
-          aplican sus usuarios de base (solo cuentas legado sin <code className="text-[11px]">restaurant_id</code>). Si
-          además querés bloquear el acceso <em>solo con contraseña</em> del <code className="text-[11px]">.env</code> en
-          esa pantalla, es opcional <code className="text-[11px]">VITE_DEMO_HOST_STRICT_LOGIN=1</code> (no hace falta si
-          vos entrás así al panel principal para revisar demos).
-        </p>
+        {createTenantMode === "demo" ? (
+          <p className="text-xs text-cyan-200/70 leading-relaxed">
+            <strong className="text-cyan-100">Demo:</strong> vence tras los días indicados (bloquea login, no borra datos
+            solo).
+          </p>
+        ) : (
+          <p className="text-xs text-cyan-200/70 leading-relaxed">
+            <strong className="text-cyan-100">Cliente:</strong> sin fecha de expiración; cuenta de producción (
+            <code className="text-[11px]">is_demo = false</code>).
+          </p>
+        )}
+
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            disabled={demoCreating}
+            onClick={() => setCreateTenantMode("demo")}
+            className={`rounded-lg px-4 py-2 text-sm font-semibold transition-colors ${
+              createTenantMode === "demo"
+                ? "bg-cyan-600 text-white"
+                : "border border-cyan-800/60 bg-slate-950 text-cyan-200/90 hover:border-cyan-600/50"
+            }`}
+          >
+            Crear demo
+          </button>
+          <button
+            type="button"
+            disabled={demoCreating}
+            onClick={() => setCreateTenantMode("production")}
+            className={`rounded-lg px-4 py-2 text-sm font-semibold transition-colors ${
+              createTenantMode === "production"
+                ? "bg-emerald-600 text-white hover:bg-emerald-500"
+                : "border border-cyan-800/60 bg-slate-950 text-cyan-200/90 hover:border-cyan-600/50"
+            }`}
+          >
+            Crear cliente
+          </button>
+        </div>
 
         <div className="grid gap-3 sm:grid-cols-2">
           <div className="space-y-1 text-sm sm:col-span-2">
@@ -771,33 +827,72 @@ export default function MaestroPanel({
             />
           </label>
           <label className="block space-y-1 text-sm">
-            <span className="text-cyan-200/90">Nombre del restaurante demo</span>
+            <span className="text-cyan-200/90">
+              {createTenantMode === "production" ? "Nombre del restaurante" : "Nombre del demo"}
+            </span>
             <input
               type="text"
               value={demoDisplayName}
               onChange={(e) => setDemoDisplayName(e.target.value)}
-              placeholder="Ej: Demo Cliente ACME"
+              placeholder={createTenantMode === "production" ? "Ej: Pizzería Centro" : "Ej: Demo Cliente ACME"}
               disabled={demoCreating}
               className="h-10 w-full rounded-lg border border-cyan-800/60 bg-slate-950 px-3 text-sm text-slate-100 disabled:opacity-50"
               autoComplete="off"
             />
           </label>
+          <div className="space-y-2 text-sm sm:col-span-2">
+            <span className="text-cyan-200/90">Plan de servicio</span>
+            <div className="grid gap-2 sm:grid-cols-2">
+              {SERVICE_PLAN_OPTIONS.map((opt) => (
+                <label
+                  key={opt.id}
+                  className={`flex cursor-pointer gap-2 rounded-lg border p-3 transition-colors ${
+                    demoServicePlan === opt.id
+                      ? "border-cyan-500/60 bg-cyan-950/40"
+                      : "border-cyan-900/50 bg-slate-950/40 hover:border-cyan-800/50"
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="demoServicePlan"
+                    value={opt.id}
+                    checked={demoServicePlan === opt.id}
+                    onChange={() => setDemoServicePlan(opt.id)}
+                    disabled={demoCreating}
+                    className="mt-1"
+                  />
+                  <span>
+                    <span className="font-medium text-slate-100">{opt.label}</span>
+                    <span className="mt-1 block text-[11px] leading-snug text-cyan-200/65">{opt.description}</span>
+                  </span>
+                </label>
+              ))}
+            </div>
+          </div>
+          {demoServicePlan === SERVICE_PLAN_FULL ? (
           <label className="block space-y-1 text-sm sm:col-span-2">
-            <span className="text-cyan-200/90">WhatsApp del restaurante demo (opcional)</span>
+              <span className="text-cyan-200/90">WhatsApp del restaurante (plan completo)</span>
             <input
               type="text"
               inputMode="numeric"
               value={demoWhatsapp}
               onChange={(e) => setDemoWhatsapp(e.target.value)}
-              placeholder="Ej: 56912345678 — vacío = número automático interno"
+                placeholder="Ej: 56912345678 — vacío = placeholder hasta conectar bot"
               disabled={demoCreating}
               className="h-10 w-full max-w-md rounded-lg border border-cyan-800/60 bg-slate-950 px-3 text-sm text-slate-100 disabled:opacity-50"
               autoComplete="off"
             />
             <span className="block text-[11px] text-cyan-200/60">
-              Debe ser único (no puede repetir plantilla ni otro local). Solo dígitos; con prefijo país.
+                Número único en la base. Requiere despliegue del bot con carpeta wwebjs propia (ver docs).
             </span>
           </label>
+          ) : (
+            <p className="text-xs text-cyan-200/70 sm:col-span-2 leading-relaxed">
+              Plan web: no se usa WhatsApp ni carpeta <code className="text-[10px]">.wwebjs_auth</code> para este
+              cliente. Carta, mesa QR y panel sí.
+            </p>
+          )}
+          {createTenantMode === "demo" ? (
           <label className="block space-y-1 text-sm">
             <span className="text-cyan-200/90">Días hasta expiración</span>
             <input
@@ -810,14 +905,15 @@ export default function MaestroPanel({
               className="h-10 w-full rounded-lg border border-cyan-800/60 bg-slate-950 px-3 text-sm text-slate-100 disabled:opacity-50"
             />
             <span className="block text-[11px] text-cyan-200/60 leading-snug">
-              Valor por defecto del equipo: variable opcional{" "}
-              <code className="text-[10px]">VITE_DEFAULT_DEMO_EXPIRES_DAYS</code> (1–366). Al vencer,{" "}
-              <code className="text-[10px]">demo_expires_at</code> bloquea el login; borrar datos o filas es Fase 4 del
-              roadmap — ver <code className="text-[10px]">dashboard/sql/demo_cleanup_expired.sql</code>.
+                Al vencer, <code className="text-[10px]">demo_expires_at</code> bloquea el login (no borra la cuenta
+                automáticamente).
             </span>
           </label>
+          ) : null}
           <label className="block space-y-1 text-sm">
-            <span className="text-cyan-200/90">Usuario admin del demo</span>
+            <span className="text-cyan-200/90">
+              {createTenantMode === "production" ? "Usuario admin del cliente" : "Usuario admin del demo"}
+            </span>
             <input
               type="text"
               value={demoAdminUser}
@@ -864,7 +960,9 @@ export default function MaestroPanel({
         ) : null}
         {demoOk ? (
           <div className="rounded-lg border border-emerald-500/40 bg-emerald-950/30 p-3 text-sm text-emerald-100 space-y-2">
-            <p>Demo listo: slug {demoOk.demoSlug}</p>
+            <p>
+              {!demoOk.demoExpiresAt ? "Cliente listo" : "Demo listo"}: slug {demoOk.demoSlug}
+            </p>
             <p className="text-xs break-all">
               Login: <span className="font-mono text-emerald-200">{demoOk.loginUrl}</span>
             </p>
@@ -884,7 +982,15 @@ export default function MaestroPanel({
               (QR desde el admin del demo: pestañas QR Menú y Carta y QR mesas).
             </p>
             <p className="text-xs text-emerald-200/80">
-              Platos copiados: {demoOk.menuItemCount ?? "—"} · expira: {demoOk.demoExpiresAt || "—"}
+              Platos copiados: {demoOk.menuItemCount ?? "—"}
+              {demoOk.demoExpiresAt ? (
+                <>
+                  {" "}
+                  · expira: <span className="font-mono">{demoOk.demoExpiresAt}</span>
+                </>
+              ) : (
+                <> · sin vencimiento (cliente producción)</>
+              )}
               {demoOk.demoWhatsappNumber ? (
                 <>
                   {" "}
@@ -908,7 +1014,13 @@ export default function MaestroPanel({
           onClick={() => void submitCreateDemo()}
           className="rounded-lg bg-cyan-600 px-4 py-2 text-sm font-semibold text-white hover:bg-cyan-500 disabled:opacity-50"
         >
-          {demoCreating ? "Creando demo…" : "Crear demo"}
+          {demoCreating
+            ? createTenantMode === "production"
+              ? "Creando cliente…"
+              : "Creando demo…"
+            : createTenantMode === "production"
+              ? "Crear cliente"
+              : "Crear demo"}
         </button>
 
         <div className="border-t border-rose-500/25 pt-4 mt-1 space-y-3">
@@ -972,6 +1084,148 @@ export default function MaestroPanel({
             </p>
           ) : null}
         </div>
+      </div>
+
+      <div className="rounded-xl border border-slate-700 bg-slate-900 p-6 space-y-5">
+        <h3 className="text-sm font-semibold text-slate-200">Pestañas principales del dashboard</h3>
+        <p className="text-xs text-slate-500">
+          Si una pestaña está en OFF, el admin del local no la ve. La pestaña Maestro sigue visible solo para vos.
+        </p>
+
+        {loadingRestaurant ? (
+          <p className="text-sm text-slate-500">Cargando estado…</p>
+        ) : !restaurantId ? (
+          <p className="text-sm text-rose-300">No hay restaurante asociado al panel.</p>
+        ) : (
+          <>
+            <MaestroPanelToggle
+              label="Pedidos"
+              enabled={ordersPanelEnabled}
+              onHint="ON · Se muestra la pestaña Pedidos."
+              offHint="OFF · Se oculta la pestaña Pedidos."
+              disabled={busy}
+              onToggle={() =>
+                setAdminPanelFlag(
+                  "orders_panel_enabled",
+                  !ordersPanelEnabled,
+                  "Pedidos",
+                  "Pestaña Pedidos habilitada.",
+                  "Pestaña Pedidos deshabilitada."
+                )
+              }
+            />
+            <MaestroPanelToggle
+              label="Gestor de menú"
+              enabled={menuPanelEnabled}
+              onHint="ON · Se muestra la pestaña Gestor de menú."
+              offHint="OFF · Se oculta la pestaña Gestor de menú."
+              disabled={busy}
+              onToggle={() =>
+                setAdminPanelFlag(
+                  "menu_panel_enabled",
+                  !menuPanelEnabled,
+                  "Gestor de menú",
+                  "Pestaña Gestor de menú habilitada.",
+                  "Pestaña Gestor de menú deshabilitada."
+                )
+              }
+            />
+            <MaestroPanelToggle
+              label="Configuración"
+              enabled={settingsPanelEnabled}
+              onHint="ON · Se muestra la pestaña Configuración."
+              offHint="OFF · Se oculta la pestaña Configuración."
+              disabled={busy}
+              onToggle={() =>
+                setAdminPanelFlag(
+                  "settings_panel_enabled",
+                  !settingsPanelEnabled,
+                  "Configuración",
+                  "Pestaña Configuración habilitada.",
+                  "Pestaña Configuración deshabilitada."
+                )
+              }
+            />
+            <MaestroPanelToggle
+              label="Usuarios"
+              enabled={usersPanelEnabled}
+              onHint="ON · Se muestra la pestaña Usuarios."
+              offHint="OFF · Se oculta la pestaña Usuarios."
+              disabled={busy}
+              onToggle={() =>
+                setAdminPanelFlag(
+                  "users_panel_enabled",
+                  !usersPanelEnabled,
+                  "Usuarios",
+                  "Pestaña Usuarios habilitada.",
+                  "Pestaña Usuarios deshabilitada."
+                )
+              }
+            />
+            <MaestroPanelToggle
+              label="Gestor de stock (Dashboard)"
+              enabled={stockPanelEnabled}
+              onHint="ON · Se muestra la pestaña de Gestor de stock en el dashboard."
+              offHint="OFF · Se oculta la pestaña de Gestor de stock en el dashboard."
+              disabled={busy}
+              onToggle={() => setStockPanelFlag(!stockPanelEnabled)}
+            />
+            <MaestroPanelToggle
+              label="Controles Bot/Horario en Configuración"
+              enabled={botRuntimeSwitchesVisible}
+              onHint="ON · Configuración muestra los switches Bot de WhatsApp y Respetar horario."
+              offHint="OFF · Configuración oculta ambos switches."
+              disabled={busy}
+              onToggle={() => setBotRuntimeSwitchesVisibleFlag(!botRuntimeSwitchesVisible)}
+            />
+            <MaestroPanelToggle
+              label="Selector modalidad mozo"
+              enabled={waiterFulfillmentSelectorEnabled}
+              onHint="ON · El mozo puede ver y elegir Mesa o Delivery."
+              offHint="OFF · El panel del mozo queda fijo en Mesa y oculta el selector."
+              disabled={busy}
+              onToggle={() => setWaiterFulfillmentSelectorFlag(!waiterFulfillmentSelectorEnabled)}
+            />
+            <MaestroPanelToggle
+              label="Estadísticas"
+              enabled={statsEnabled}
+              onHint="ON · Se muestra la pestaña de estadísticas."
+              offHint="OFF · Se oculta la pestaña de estadísticas."
+              disabled={busy}
+              onToggle={() =>
+                setServiceFlag(
+                  "stats_enabled",
+                  !statsEnabled,
+                  !statsEnabled ? "Estadísticas habilitadas." : "Estadísticas deshabilitadas."
+                )
+              }
+            />
+            <MaestroPanelToggle
+              label="Configurar métricas en Estadísticas"
+              enabled={statsMetricsConfigurable}
+              onHint="ON · Configuración de períodos, exportar CSV y atajos visibles."
+              offHint="OFF · Sin configuración (valores fijos)."
+              disabled={busy || !statsEnabled}
+              onToggle={() => setStatsMetricsConfigurableFlag(!statsMetricsConfigurable)}
+            />
+            <MaestroPanelToggle
+              label="QR Menú (Dashboard)"
+              enabled={qrMenuEnabled}
+              onHint="ON · Se muestra la pestaña QR Menú (solo lectura)."
+              offHint="OFF · Se oculta la pestaña QR Menú."
+              disabled={busy}
+              onToggle={() => setQrMenuFlag(!qrMenuEnabled)}
+            />
+            <MaestroPanelToggle
+              label="Carta y QR mesas (Dashboard)"
+              enabled={mesaQrEnabled}
+              onHint="ON · Se muestra la pestaña Carta y QR Mesas."
+              offHint="OFF · Se oculta la pestaña Carta y QR Mesas."
+              disabled={busy}
+              onToggle={() => setMesaQrFlag(!mesaQrEnabled)}
+            />
+          </>
+        )}
       </div>
 
       <div className="rounded-xl border border-slate-700 bg-slate-900 p-6 space-y-5">
@@ -1049,7 +1303,7 @@ export default function MaestroPanel({
             </div>
             </div>
 
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-6">
+            <div className="hidden">
             <div className="min-w-0 flex-1">
               <p className="text-sm font-medium text-slate-200">Retiro en local</p>
               <p className="mt-1 text-xs text-slate-500">
@@ -1253,6 +1507,7 @@ export default function MaestroPanel({
             </div>
             </div>
 
+            <div className="hidden">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-6">
             <div className="min-w-0 flex-1">
               <p className="text-sm font-medium text-slate-200">Estadísticas</p>
@@ -1435,6 +1690,8 @@ export default function MaestroPanel({
             </div>
             </div>
 
+            </div>
+
             <div className="rounded-lg border border-violet-500/25 bg-violet-950/20 p-4 space-y-3">
               <div>
                 <p className="text-sm font-medium text-slate-200">URL base del panel (QR y carta)</p>
@@ -1466,90 +1723,6 @@ export default function MaestroPanel({
               >
                 {savingDashboardBase ? "Guardando…" : "Guardar URL base"}
               </button>
-            </div>
-
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-6">
-            <div className="min-w-0 flex-1">
-              <p className="text-sm font-medium text-slate-200">Gestor de stock (Dashboard)</p>
-              <p className="mt-1 text-xs text-slate-500">
-                {stockPanelEnabled
-                  ? "ON · Se muestra la pestaña de Gestor de stock en el dashboard."
-                  : "OFF · Se oculta la pestaña de Gestor de stock en el dashboard."}
-              </p>
-            </div>
-
-            <div className="flex shrink-0 items-center gap-3 sm:gap-4">
-              <span className={`w-9 text-center text-xs font-bold uppercase tracking-wide ${stockPanelEnabled ? "text-slate-500" : "text-rose-300"}`}>
-                Off
-              </span>
-              <button
-                type="button"
-                role="switch"
-                aria-checked={stockPanelEnabled}
-                aria-label={stockPanelEnabled ? "Gestor de stock activado. Pulsa para desactivar." : "Gestor de stock desactivado. Pulsa para activar."}
-                disabled={busy}
-                onClick={() => setStockPanelFlag(!stockPanelEnabled)}
-                className={[
-                  "relative h-10 w-[4.5rem] shrink-0 rounded-full border border-slate-600/80 transition-colors duration-200",
-                  stockPanelEnabled ? "bg-emerald-600" : "bg-slate-700",
-                  busy ? "cursor-not-allowed opacity-50" : "cursor-pointer",
-                  "focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-900"
-                ].join(" ")}
-              >
-                <span
-                  aria-hidden
-                  className={[
-                    "absolute top-1 left-1 block h-8 w-8 rounded-full bg-white shadow-md ring-1 ring-black/10 transition-transform duration-200 ease-out",
-                    stockPanelEnabled ? "translate-x-8" : "translate-x-0"
-                  ].join(" ")}
-                />
-              </button>
-              <span className={`w-9 text-center text-xs font-bold uppercase tracking-wide ${stockPanelEnabled ? "text-emerald-300" : "text-slate-500"}`}>
-                On
-              </span>
-            </div>
-            </div>
-
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-6">
-            <div className="min-w-0 flex-1">
-              <p className="text-sm font-medium text-slate-200">Controles Bot/Horario en Configuración</p>
-              <p className="mt-1 text-xs text-slate-500">
-                {botRuntimeSwitchesVisible
-                  ? "ON · Configuración muestra los switches Bot de WhatsApp y Respetar horario."
-                  : "OFF · Configuración oculta ambos switches."}
-              </p>
-            </div>
-
-            <div className="flex shrink-0 items-center gap-3 sm:gap-4">
-              <span className={`w-9 text-center text-xs font-bold uppercase tracking-wide ${botRuntimeSwitchesVisible ? "text-slate-500" : "text-rose-300"}`}>
-                Off
-              </span>
-              <button
-                type="button"
-                role="switch"
-                aria-checked={botRuntimeSwitchesVisible}
-                aria-label={botRuntimeSwitchesVisible ? "Controles Bot/Horario visibles. Pulsa para ocultar." : "Controles Bot/Horario ocultos. Pulsa para mostrar."}
-                disabled={busy}
-                onClick={() => setBotRuntimeSwitchesVisibleFlag(!botRuntimeSwitchesVisible)}
-                className={[
-                  "relative h-10 w-[4.5rem] shrink-0 rounded-full border border-slate-600/80 transition-colors duration-200",
-                  botRuntimeSwitchesVisible ? "bg-emerald-600" : "bg-slate-700",
-                  busy ? "cursor-not-allowed opacity-50" : "cursor-pointer",
-                  "focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-900"
-                ].join(" ")}
-              >
-                <span
-                  aria-hidden
-                  className={[
-                    "absolute top-1 left-1 block h-8 w-8 rounded-full bg-white shadow-md ring-1 ring-black/10 transition-transform duration-200 ease-out",
-                    botRuntimeSwitchesVisible ? "translate-x-8" : "translate-x-0"
-                  ].join(" ")}
-                />
-              </button>
-              <span className={`w-9 text-center text-xs font-bold uppercase tracking-wide ${botRuntimeSwitchesVisible ? "text-emerald-300" : "text-slate-500"}`}>
-                On
-              </span>
-            </div>
             </div>
 
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-6">
@@ -1659,5 +1832,50 @@ export default function MaestroPanel({
         </div>
       ) : null}
     </section>
+  );
+}
+
+function MaestroPanelToggle({ label, enabled, onHint, offHint, disabled, onToggle }) {
+  return (
+    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-6">
+      <div className="min-w-0 flex-1">
+        <p className="text-sm font-medium text-slate-200">{label}</p>
+        <p className="mt-1 text-xs text-slate-500">{enabled ? onHint : offHint}</p>
+      </div>
+      <div className="flex shrink-0 items-center gap-3 sm:gap-4">
+        <span
+          className={`w-9 text-center text-xs font-bold uppercase tracking-wide ${enabled ? "text-slate-500" : "text-rose-300"}`}
+        >
+          Off
+        </span>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={enabled}
+          aria-label={enabled ? `${label} activado. Pulsa para desactivar.` : `${label} desactivado. Pulsa para activar.`}
+          disabled={disabled}
+          onClick={onToggle}
+          className={[
+            "relative h-10 w-[4.5rem] shrink-0 rounded-full border border-slate-600/80 transition-colors duration-200",
+            enabled ? "bg-emerald-600" : "bg-slate-700",
+            disabled ? "cursor-not-allowed opacity-50" : "cursor-pointer",
+            "focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-900"
+          ].join(" ")}
+        >
+          <span
+            aria-hidden
+            className={[
+              "absolute top-1 left-1 block h-8 w-8 rounded-full bg-white shadow-md ring-1 ring-black/10 transition-transform duration-200 ease-out",
+              enabled ? "translate-x-8" : "translate-x-0"
+            ].join(" ")}
+          />
+        </button>
+        <span
+          className={`w-9 text-center text-xs font-bold uppercase tracking-wide ${enabled ? "text-emerald-300" : "text-slate-500"}`}
+        >
+          On
+        </span>
+      </div>
+    </div>
   );
 }

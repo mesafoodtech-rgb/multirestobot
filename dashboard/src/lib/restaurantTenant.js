@@ -26,6 +26,16 @@ function rowMatchesCandidates(row, candidateSet) {
   return botNumberMatchCandidates(d).some((v) => candidateSet.has(v));
 }
 
+/**
+ * Filtro opcional por tenant en mutaciones Supabase (defensa en profundidad).
+ * Si `restaurantId` está vacío, devuelve la query sin cambios (modo legado).
+ */
+export function withRestaurantScope(query, restaurantId) {
+  const rid = String(restaurantId ?? "").trim();
+  if (!rid) return query;
+  return query.eq("restaurant_id", rid);
+}
+
 /** Slug de URL para demos: minúsculas, sin espacios laterales. */
 export function normalizeDemoSlug(raw) {
   return String(raw ?? "")

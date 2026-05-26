@@ -43,7 +43,7 @@ function formatUsd(usd) {
  * Acumula consumo de tokens por dia y por proceso. Se imprime en logs:
  *   - una linea por cada llamada de IA (`[ai-tokens]`)
  *   - una linea de resumen al cambiar de dia (`[ai-tokens-day]`)
- * Para ver en runtime: `docker logs restobot-whatsapp | grep ai-tokens`.
+ * Para ver en runtime: `docker logs multirestobot-whatsapp | grep ai-tokens`.
  */
 const tokenCounters = {
   date: new Date().toISOString().slice(0, 10),

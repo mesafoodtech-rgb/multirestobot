@@ -225,7 +225,9 @@ export default function DashboardUsersPanel({ restaurantId = "", scopeByRestaura
       }
     }
     setSavingId(row.id);
-    const { error: upErr } = await supabase.from(TABLE).update(patch).eq("id", row.id);
+    let updateQuery = supabase.from(TABLE).update(patch).eq("id", row.id);
+    if (rid) updateQuery = updateQuery.eq("restaurant_id", rid);
+    const { error: upErr } = await updateQuery;
     setSavingId(null);
     if (upErr) {
       setError(upErr.code === "23505" ? "Ese nombre de usuario ya existe." : upErr.message);
@@ -248,7 +250,9 @@ export default function DashboardUsersPanel({ restaurantId = "", scopeByRestaura
     const { id } = pendingDelete;
     setError("");
     setSavingId(id);
-    const { error: delErr } = await supabase.from(TABLE).delete().eq("id", id);
+    let deleteQuery = supabase.from(TABLE).delete().eq("id", id);
+    if (rid) deleteQuery = deleteQuery.eq("restaurant_id", rid);
+    const { error: delErr } = await deleteQuery;
     setSavingId(null);
     if (delErr) {
       setError(delErr.message);

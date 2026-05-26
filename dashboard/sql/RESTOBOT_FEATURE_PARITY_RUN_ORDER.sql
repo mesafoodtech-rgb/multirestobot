@@ -1,12 +1,18 @@
 -- Ejecutar en Supabase SQL Editor para dejar `restobot` al nivel funcional del código actual.
--- Este archivo es una guía de orden. Copiá/pegá y ejecutá los archivos indicados en esta secuencia:
+--
+-- Atajo (proyecto nuevo vacío): un solo archivo con todo el esquema + RLS + realtime:
+--   dashboard/sql/RESTOBOT_FULL_INSTALL.sql
+--   (generar de nuevo: node scripts/build-full-install-sql.mjs)
+--
+-- Este archivo es una guía de orden por partes. Copiá/pegá y ejecutá los archivos indicados en esta secuencia:
 --
 -- 1) dashboard_users.sql
 -- 2) dashboard_users_role_encargado.sql
 -- 3) restaurants_config_columns.sql
 -- 4) stock_manager_tables.sql
--- 5) demo_multi_tenant.sql  (demos por /d/{slug}/… — repo demo)
---    Luego, por cada cliente: dashboard/sql/demo_provision_new_demo.sql (clonar plantilla)
+-- 5) demo_multi_tenant.sql  (tenants por /d/{slug}/…)
+--    Por demo: demo_provision_new_demo.sql (TTL, is_demo=true)
+--    Por cliente real: tenant_provision_production.sql (sin vencimiento, is_demo=false)
 -- 6) rls_policies_restobot.sql
 -- 6b) Opcional: dashboard/sql/rls_phase3_security_notes.sql (auditoría RLS; no cambia políticas)
 -- 7) grants_api_roles_restobot.sql

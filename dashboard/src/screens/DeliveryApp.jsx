@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "../supabaseClient";
 import { getSession, logout } from "../lib/auth";
-import { resolveRestaurantForDashboard } from "../lib/restaurantTenant";
+import { resolveRestaurantForDashboard, withRestaurantScope } from "../lib/restaurantTenant";
 import { useDemoTenant } from "../lib/DemoTenantContext";
 import { deliveryMayLoginToday } from "../lib/deliverySchedule";
 import {
@@ -268,15 +268,18 @@ export default function DeliveryApp({ onLogout }) {
     setError("");
     setSavingOrderId(order.id);
     const claimedAt = new Date().toISOString();
-    const { data: updatedRow, error: updateError } = await supabase
-      .from("orders")
-      .update({
-        delivery_claimed_by_user_id: session.userId,
-        delivery_claimed_at: claimedAt
-      })
-      .eq("id", order.id)
-      .is("delivery_claimed_by_user_id", null)
-      .not("delivery_ready_broadcast_at", "is", null)
+    const { data: updatedRow, error: updateError } = await withRestaurantScope(
+      supabase
+        .from("orders")
+        .update({
+          delivery_claimed_by_user_id: session.userId,
+          delivery_claimed_at: claimedAt
+        })
+        .eq("id", order.id)
+        .is("delivery_claimed_by_user_id", null)
+        .not("delivery_ready_broadcast_at", "is", null),
+      restaurantId
+    )
       .select("*")
       .maybeSingle();
 
@@ -316,14 +319,17 @@ export default function DeliveryApp({ onLogout }) {
         return;
       }
 
-      let query = supabase
-        .from("orders")
-        .update({
-          delivery_issue_reported_at: new Date().toISOString(),
-          delivery_issue_reason: trimmed,
-          delivery_issue_reported_by_user_id: session.userId
-        })
-        .eq("id", order.id);
+      let query = withRestaurantScope(
+        supabase
+          .from("orders")
+          .update({
+            delivery_issue_reported_at: new Date().toISOString(),
+            delivery_issue_reason: trimmed,
+            delivery_issue_reported_by_user_id: session.userId
+          })
+          .eq("id", order.id),
+        restaurantId
+      );
 
       if (claimId) {
         query = query.eq("delivery_claimed_by_user_id", session.userId);
@@ -394,14 +400,17 @@ export default function DeliveryApp({ onLogout }) {
         status: "cancelled",
         cancelled_at: new Date().toISOString()
       };
-      const { data: updatedRow, error: updateError } = await supabase
-        .from("orders")
-        .update(patch)
-        .eq("id", order.id)
-        .eq("delivery_claimed_by_user_id", session.userId)
-        .eq("delivery_issue_reported_by_user_id", session.userId)
-        .neq("status", "cancelled")
-        .neq("status", "delivered")
+      const { data: updatedRow, error: updateError } = await withRestaurantScope(
+        supabase
+          .from("orders")
+          .update(patch)
+          .eq("id", order.id)
+          .eq("delivery_claimed_by_user_id", session.userId)
+          .eq("delivery_issue_reported_by_user_id", session.userId)
+          .neq("status", "cancelled")
+          .neq("status", "delivered"),
+        restaurantId
+      )
         .select("*")
         .maybeSingle();
 
@@ -460,12 +469,15 @@ export default function DeliveryApp({ onLogout }) {
       patch.payment_paid_at = nowIso;
     }
 
-    let updateQuery = supabase
-      .from("orders")
-      .update(patch)
-      .eq("id", order.id)
-      .neq("status", "delivered")
-      .neq("status", "cancelled");
+    let updateQuery = withRestaurantScope(
+      supabase
+        .from("orders")
+        .update(patch)
+        .eq("id", order.id)
+        .neq("status", "delivered")
+        .neq("status", "cancelled"),
+      restaurantId
+    );
     if (session?.userId && order.delivery_ready_broadcast_at) {
       updateQuery = updateQuery.eq("delivery_claimed_by_user_id", session.userId);
     }
@@ -529,11 +541,10 @@ export default function DeliveryApp({ onLogout }) {
       patch.payment_paid_at = null;
     }
 
-    const { data: updatedRow, error: updateError } = await supabase
-      .from("orders")
-      .update(patch)
-      .eq("id", order.id)
-      .eq("status", "delivered")
+    const { data: updatedRow, error: updateError } = await withRestaurantScope(
+      supabase.from("orders").update(patch).eq("id", order.id).eq("status", "delivered"),
+      restaurantId
+    )
       .select("*")
       .maybeSingle();
 

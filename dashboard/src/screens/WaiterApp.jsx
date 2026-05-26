@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "../supabaseClient";
 import { getSession } from "../lib/auth";
-import { resolveRestaurantForDashboard } from "../lib/restaurantTenant";
+import { resolveRestaurantForDashboard, withRestaurantScope } from "../lib/restaurantTenant";
 import { useDemoTenant } from "../lib/DemoTenantContext";
 import {
   currency,
@@ -543,14 +543,17 @@ export default function WaiterApp({ onLogout }) {
     setError("");
     setSavingOrderId(order.id);
     const paidAt = new Date().toISOString();
-    const { data: updatedRow, error: updateError } = await supabase
-      .from("orders")
-      .update({
-        payment_status: "paid",
-        payment_paid_at: paidAt
-      })
-      .eq("id", order.id)
-      .neq("status", "cancelled")
+    const { data: updatedRow, error: updateError } = await withRestaurantScope(
+      supabase
+        .from("orders")
+        .update({
+          payment_status: "paid",
+          payment_paid_at: paidAt
+        })
+        .eq("id", order.id)
+        .neq("status", "cancelled"),
+      restaurantId
+    )
       .select("*")
       .maybeSingle();
 
@@ -600,16 +603,19 @@ export default function WaiterApp({ onLogout }) {
     setError("");
     setSavingOrderId(order.id);
     const deliveredAt = new Date().toISOString();
-    const { data: updatedRow, error: updateError } = await supabase
-      .from("orders")
-      .update({
-        status: "delivered",
-        delivered_at: deliveredAt
-      })
-      .eq("id", order.id)
-      .eq("fulfillment_type", "delivery_mozo")
-      .neq("status", "delivered")
-      .neq("status", "cancelled")
+    const { data: updatedRow, error: updateError } = await withRestaurantScope(
+      supabase
+        .from("orders")
+        .update({
+          status: "delivered",
+          delivered_at: deliveredAt
+        })
+        .eq("id", order.id)
+        .eq("fulfillment_type", "delivery_mozo")
+        .neq("status", "delivered")
+        .neq("status", "cancelled"),
+      restaurantId
+    )
       .select("*")
       .maybeSingle();
 

@@ -18,9 +18,12 @@ const {
   updateOrderMatching,
   getRestaurantNameById,
   createDemoFromTemplate,
+  createTenantFromTemplate,
   deleteDemoBySlug,
-  verifyDashboardUserCredentials
+  verifyDashboardUserCredentials,
+  verifyDashboardSession
 } = require("./database");
+const { runSupabaseMigrations } = require("./scripts/supabase-migrate");
 const { startOrderDeliveryNotifier } = require("./order_delivery_notifier");
 const { startPaymentStatusPoller } = require("./payment_status_poller");
 const {
@@ -88,9 +91,11 @@ const MESA_ORDER_PATH = "/api/mesa/order";
 const DASHBOARD_PASSWORD_VERIFY_PATH = "/api/dashboard/password/verify";
 const DASHBOARD_PASSWORD_HASH_PATH = "/api/dashboard/password/hash";
 const DASHBOARD_DB_LOGIN_PATH = "/api/dashboard/db-login";
+const DASHBOARD_VALIDATE_SESSION_PATH = "/api/dashboard/validate-session";
 const DASHBOARD_STOCK_RECIPE_AI_PATH = "/api/dashboard/stock/recipe-ai";
 const MAESTRO_CREATE_DEMO_PATH = "/api/maestro/create-demo";
 const MAESTRO_DELETE_DEMO_PATH = "/api/maestro/delete-demo";
+const MAESTRO_RUN_MIGRATIONS_PATH = "/api/maestro/run-migrations";
 /** Contraseña del panel Maestro (servidor). Preferí MAESTRO_PASSWORD; si no, se acepta VITE_MAESTRO_PASSWORD del mismo .env. */
 const MAESTRO_PASSWORD_EXPECTED = String(
   process.env.MAESTRO_PASSWORD || process.env.VITE_MAESTRO_PASSWORD || ""
@@ -165,9 +170,11 @@ const mesaApiServer = http.createServer(async (req, res) => {
       pathName !== DASHBOARD_PASSWORD_VERIFY_PATH &&
       pathName !== DASHBOARD_PASSWORD_HASH_PATH &&
       pathName !== DASHBOARD_DB_LOGIN_PATH &&
+      pathName !== DASHBOARD_VALIDATE_SESSION_PATH &&
       pathName !== DASHBOARD_STOCK_RECIPE_AI_PATH &&
       pathName !== MAESTRO_CREATE_DEMO_PATH &&
-      pathName !== MAESTRO_DELETE_DEMO_PATH
+      pathName !== MAESTRO_DELETE_DEMO_PATH &&
+      pathName !== MAESTRO_RUN_MIGRATIONS_PATH
     ) {
       return sendJson(res, 404, { error: "Not found" });
     }
@@ -226,6 +233,27 @@ const mesaApiServer = http.createServer(async (req, res) => {
       }
     }
 
+    if (pathName === DASHBOARD_VALIDATE_SESSION_PATH) {
+      const userId = String(body.userId || "").trim();
+      const role = String(body.role || "").trim();
+      const ridRaw = body.restaurantId;
+      let restaurantId = null;
+      if (ridRaw !== null && ridRaw !== undefined && String(ridRaw).trim() !== "") {
+        const s = String(ridRaw).trim();
+        if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s)) {
+          return sendJson(res, 400, { ok: false, reason: "invalid_restaurant_id" });
+        }
+        restaurantId = s;
+      }
+      try {
+        const result = await verifyDashboardSession({ userId, restaurantId, role: role || null });
+        return sendJson(res, 200, result);
+      } catch (e) {
+        console.error("[mesa-api] validate-session", e);
+        return sendJson(res, 500, { ok: false, reason: "server_error", error: e?.message || "Error interno" });
+      }
+    }
+
     if (pathName === DASHBOARD_STOCK_RECIPE_AI_PATH) {
       const text = String(body.text || "").trim();
       if (!text) return sendJson(res, 400, { error: "Falta text" });
@@ -248,20 +276,42 @@ const mesaApiServer = http.createServer(async (req, res) => {
         return sendJson(res, 403, { error: "Contraseña maestro incorrecta." });
       }
       try {
-        const result = await createDemoFromTemplate({
+        const tenantMode = String(body.tenantMode || "demo").trim().toLowerCase();
+        const isDemo = tenantMode !== "production";
+        const result = await createTenantFromTemplate({
           templateRestaurantId: body.templateRestaurantId,
-          demoSlug: body.demoSlug,
-          demoName: body.demoName,
-          expiresDays: body.expiresDays,
+          tenantSlug: body.demoSlug || body.tenantSlug,
+          tenantName: body.demoName || body.tenantName,
+          isDemo,
+          expiresDays: isDemo ? body.expiresDays : null,
           adminUsername: body.adminUsername,
           adminPassword: body.adminPassword,
-          demoWhatsappNumber: body.demoWhatsappNumber
+          whatsappNumber: body.demoWhatsappNumber || body.whatsappNumber,
+          servicePlan: body.servicePlan
         });
         return sendJson(res, 200, result);
       } catch (error) {
         const msg = error?.message || String(error);
         const code = msg.includes("ya existe") ? 409 : 400;
         return sendJson(res, code, { error: msg });
+      }
+    }
+
+    if (pathName === MAESTRO_RUN_MIGRATIONS_PATH) {
+      if (!MAESTRO_PASSWORD_EXPECTED) {
+        return sendJson(res, 503, {
+          error: "Servidor sin MAESTRO_PASSWORD configurada. No se pueden ejecutar migraciones."
+        });
+      }
+      const maestroPassword = String(body.maestroPassword || "");
+      if (!maestroPassword || maestroPassword !== MAESTRO_PASSWORD_EXPECTED) {
+        return sendJson(res, 403, { error: "Contraseña maestro incorrecta." });
+      }
+      try {
+        const out = await runSupabaseMigrations();
+        return sendJson(res, 200, out);
+      } catch (error) {
+        return sendJson(res, 500, { ok: false, error: error?.message || String(error) });
       }
     }
 
@@ -580,10 +630,14 @@ function businessHoursForTenant(tenant) {
   return parsed || BUSINESS_HOURS;
 }
 
-/** Si es false en `restaurants.metadata.bot_whatsapp_enabled`, el bot no responde ni registra (silencio total). */
+/** Plan web = sin bot; full respeta `metadata.bot_whatsapp_enabled`. */
 function tenantBotWhatsappEnabled(tenant) {
   const m = tenant?.metadata;
   if (m == null || typeof m !== "object" || Array.isArray(m)) return true;
+  const plan = String(m.service_plan || "")
+    .trim()
+    .toLowerCase();
+  if (plan === "web" || plan === "solo_web" || plan === "qr") return false;
   if (m.bot_whatsapp_enabled === false) return false;
   return true;
 }
@@ -4291,7 +4345,7 @@ async function handleTextMessage(message, restaurantContext, tenant, customerNum
 
 const client = new Client({
   authStrategy: new LocalAuth({
-    clientId: process.env.WWEBJS_CLIENT_ID || "restobot-main",
+    clientId: process.env.WWEBJS_CLIENT_ID || "multirestobot-main",
     dataPath: AUTH_PATH
   }),
   puppeteer: {
@@ -4440,15 +4494,29 @@ client.on("message", async (message) => {
   }
 });
 
-ensureTempDir()
-  .then(() => {
-    return cleanupChromiumProfileLocks();
-  })
-  .then(() => {
-    stopPaymentPoller = startPaymentStatusPoller(() => whatsappClientForPoller);
-    return client.initialize();
-  })
-  .catch((error) => {
+const WHATSAPP_BOT_ENABLED = String(process.env.WHATSAPP_BOT_ENABLED ?? "1").trim() !== "0";
+
+function startMesaApiOnly() {
+  console.log(
+    "[restobot] WHATSAPP_BOT_ENABLED=0 — API mesa/dashboard activa; sin cliente WhatsApp ni carpeta wwebjs en este proceso."
+  );
+  stopPaymentPoller = startPaymentStatusPoller(() => null);
+}
+
+function startWhatsappBotClient() {
+  return ensureTempDir()
+    .then(() => cleanupChromiumProfileLocks())
+    .then(() => {
+      stopPaymentPoller = startPaymentStatusPoller(() => whatsappClientForPoller);
+      return client.initialize();
+    });
+}
+
+if (WHATSAPP_BOT_ENABLED) {
+  startWhatsappBotClient().catch((error) => {
     console.error("No se pudo inicializar el bot:", error);
     process.exit(1);
   });
+} else {
+  startMesaApiOnly();
+}

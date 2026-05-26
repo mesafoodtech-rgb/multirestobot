@@ -53,6 +53,9 @@ function sessionInvalidationMessage(reason) {
   if (reason === "tenant_mismatch") {
     return "Tu cuenta no pertenece a este demo. Iniciá sesión con el enlace correcto.";
   }
+  if (reason === "session_check_unavailable") {
+    return "No se pudo validar la sesión con el servidor. Volvé a iniciar sesión.";
+  }
   return "Tu sesión ya no es válida. Iniciá sesión nuevamente.";
 }
 
