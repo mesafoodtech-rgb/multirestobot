@@ -18,5 +18,17 @@ create unique index if not exists platform_users_email_lower_idx
 create unique index if not exists platform_users_restaurant_id_idx
   on public.platform_users (restaurant_id);
 
+alter table public.platform_users enable row level security;
+
+drop policy if exists "platform_users_allow_all" on public.platform_users;
+create policy "platform_users_allow_all"
+  on public.platform_users
+  for all
+  using (true)
+  with check (true);
+
+grant usage on schema public to anon, authenticated, service_role;
+grant select, insert, update, delete on table public.platform_users to anon, authenticated, service_role;
+
 comment on table public.platform_users is
   'Dueños registrados desde la landing; 1 demo por email. Login panel con dashboard_username (email normalizado).';

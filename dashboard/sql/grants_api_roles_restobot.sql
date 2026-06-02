@@ -15,6 +15,8 @@ grant select, insert on table public.bot_interactions to anon, authenticated;
 
 grant select, insert, update, delete on table public.dashboard_users to anon, authenticated;
 
+grant select, insert, update, delete on table public.platform_users to anon, authenticated, service_role;
+
 grant select, insert, update, delete on table public.stock_items to anon, authenticated;
 
 grant select, insert, update, delete on table public.stock_recipes to anon, authenticated;
