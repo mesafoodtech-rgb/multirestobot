@@ -121,6 +121,16 @@ async function verifyDashboardUserCredentials({ username, password, restaurantId
   if (!bcryptOk) {
     return { ok: false, error: "Usuario o contraseña incorrectos." };
   }
+  if (rid) {
+    const { data: rmeta, error: rErr } = await supabase
+      .from(TABLES.restaurants)
+      .select("demo_expires_at")
+      .eq("id", rid)
+      .maybeSingle();
+    if (!rErr && rmeta?.demo_expires_at && new Date(rmeta.demo_expires_at).getTime() < Date.now()) {
+      return { ok: false, error: "Este demo venció. Contactá al equipo para activar tu plan.", code: "demo_expired" };
+    }
+  }
   if (data.role === "delivery" && !deliveryMayLoginTodayDb(data.delivery_work_weekdays)) {
     const hint = formatAllowedWeekdaysSentenceDb(data.delivery_work_weekdays);
     return {
@@ -621,6 +631,7 @@ async function createTenantFromTemplate({
   tenantName: tenantNameRaw,
   isDemo = true,
   expiresDays: expiresDaysRaw,
+  demoExpiresAtIso: demoExpiresAtIsoRaw,
   adminUsername: adminUsernameRaw,
   adminPassword: adminPasswordRaw,
   whatsappNumber: whatsappNumberRaw,
@@ -715,9 +726,19 @@ async function createTenantFromTemplate({
     throw new Error("Plan completo: indicá whatsappNumber (único en la base).");
   }
 
-  const expiresIso = demoMode
-    ? new Date(Date.now() + Math.floor(days) * 86400000).toISOString()
-    : null;
+  let expiresIso = null;
+  if (demoMode) {
+    const customIso = String(demoExpiresAtIsoRaw || "").trim();
+    if (customIso) {
+      const t = new Date(customIso).getTime();
+      if (!Number.isFinite(t)) {
+        throw new Error("demoExpiresAtIso no es una fecha ISO válida.");
+      }
+      expiresIso = new Date(t).toISOString();
+    } else {
+      expiresIso = new Date(Date.now() + Math.floor(days) * 86400000).toISOString();
+    }
+  }
   const insertRow = {
     name: tenantName,
     public_name: tenantName,

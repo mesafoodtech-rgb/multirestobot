@@ -260,9 +260,10 @@ export async function validateStoredSession(session = getSession()) {
 
 async function loginWithTableUser(username, password, tenantCtx = {}) {
   const { restaurantId = null, demoSlug = null } = tenantCtx;
-  const norm = String(username || "")
-    .trim()
-    .toLowerCase();
+  const rawInput = String(username || "").trim().toLowerCase();
+  const norm = rawInput.includes("@")
+    ? rawInput.replace(/@/, "_at_").replace(/[^a-z0-9._-]/g, "").slice(0, 40)
+    : rawInput;
   if (!norm) {
     return { ok: false, error: "Ingresá un usuario o usá la contraseña del rol sin completar usuario." };
   }

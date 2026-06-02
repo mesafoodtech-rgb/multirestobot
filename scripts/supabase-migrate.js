@@ -34,6 +34,7 @@ const MIGRATION_FILES = [
   "rls_tenant_hardening_v1.sql",
   "rls_tenant_hardening_dashboard_users_legacy.sql",
   "tenant_service_plans.sql",
+  "platform_users.sql",
   "realtime_setup.sql"
 ];
 

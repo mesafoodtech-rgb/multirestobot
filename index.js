@@ -24,6 +24,15 @@ const {
   verifyDashboardSession
 } = require("./database");
 const { runSupabaseMigrations } = require("./scripts/supabase-migrate");
+const {
+  verifyPlatformAdminCredentials,
+  createPlatformAdminToken,
+  requirePlatformAuth,
+  registerPublicDemo,
+  resolvePublicLogin,
+  listPlatformTenants,
+  patchPlatformTenant
+} = require("./platformService");
 const { startOrderDeliveryNotifier } = require("./order_delivery_notifier");
 const { startPaymentStatusPoller } = require("./payment_status_poller");
 const {
@@ -96,12 +105,84 @@ const DASHBOARD_STOCK_RECIPE_AI_PATH = "/api/dashboard/stock/recipe-ai";
 const MAESTRO_CREATE_DEMO_PATH = "/api/maestro/create-demo";
 const MAESTRO_DELETE_DEMO_PATH = "/api/maestro/delete-demo";
 const MAESTRO_RUN_MIGRATIONS_PATH = "/api/maestro/run-migrations";
+const PUBLIC_REGISTER_PATH = "/api/public/register";
+const PUBLIC_LOGIN_PATH = "/api/public/login";
+const PLATFORM_LOGIN_PATH = "/api/platform/login";
+const PLATFORM_TENANTS_LIST_PATH = "/api/platform/tenants/list";
+const PLATFORM_TENANT_PATCH_PATH = "/api/platform/tenant/patch";
 /** Contraseña del panel Maestro (servidor). Preferí MAESTRO_PASSWORD; si no, se acepta VITE_MAESTRO_PASSWORD del mismo .env. */
 const MAESTRO_PASSWORD_EXPECTED = String(
   process.env.MAESTRO_PASSWORD || process.env.VITE_MAESTRO_PASSWORD || ""
 ).trim();
 /** Misma cadena que `VITE_MESA_QR_SECRET` en el dashboard: si está definida, exige `mesaToken` en POST /api/mesa/order */
 const MESA_QR_SECRET = String(process.env.MESA_QR_SECRET || "").trim();
+
+const registerRateByIp = new Map();
+
+function platformCorsOriginsList() {
+  const raw = String(process.env.PLATFORM_CORS_ORIGINS || "").trim();
+  if (!raw) return ["*"];
+  return raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function setPlatformCorsHeaders(req, res) {
+  const origins = platformCorsOriginsList();
+  const origin = String(req.headers.origin || "").trim();
+  let allow = "*";
+  if (origins.includes("*")) {
+    allow = origin || "*";
+  } else if (origin && origins.includes(origin)) {
+    allow = origin;
+  } else if (origins.length) {
+    allow = origins[0];
+  }
+  res.setHeader("Access-Control-Allow-Origin", allow);
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  if (allow !== "*") {
+    res.setHeader("Vary", "Origin");
+  }
+}
+
+function clientIpFromRequest(req) {
+  const xf = String(req.headers["x-forwarded-for"] || "")
+    .split(",")[0]
+    .trim();
+  return xf || req.socket?.remoteAddress || "unknown";
+}
+
+function checkRegisterRateLimit(ip) {
+  const max = 8;
+  const windowMs = 3600000;
+  const now = Date.now();
+  let entry = registerRateByIp.get(ip);
+  if (!entry || entry.resetAt <= now) {
+    entry = { count: 0, resetAt: now + windowMs };
+    registerRateByIp.set(ip, entry);
+  }
+  entry.count += 1;
+  return entry.count <= max;
+}
+
+const MESA_API_ALLOWED_PATHS = new Set([
+  MESA_ORDER_PATH,
+  DASHBOARD_PASSWORD_VERIFY_PATH,
+  DASHBOARD_PASSWORD_HASH_PATH,
+  DASHBOARD_DB_LOGIN_PATH,
+  DASHBOARD_VALIDATE_SESSION_PATH,
+  DASHBOARD_STOCK_RECIPE_AI_PATH,
+  MAESTRO_CREATE_DEMO_PATH,
+  MAESTRO_DELETE_DEMO_PATH,
+  MAESTRO_RUN_MIGRATIONS_PATH,
+  PUBLIC_REGISTER_PATH,
+  PUBLIC_LOGIN_PATH,
+  PLATFORM_LOGIN_PATH,
+  PLATFORM_TENANTS_LIST_PATH,
+  PLATFORM_TENANT_PATCH_PATH
+]);
 
 function validateMesaQrToken(restaurantId, tableNumber, token) {
   if (!MESA_QR_SECRET) {
@@ -149,10 +230,7 @@ function isMesaQrTableBlocked(restaurant, tableNumber) {
 }
 
 const mesaApiServer = http.createServer(async (req, res) => {
-  // CORS para el panel web (Vite suele correr en otro puerto).
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  setPlatformCorsHeaders(req, res);
 
   if (req.method === "OPTIONS") {
     res.statusCode = 204;
@@ -165,17 +243,7 @@ const mesaApiServer = http.createServer(async (req, res) => {
 
     const url = new URL(req.url || "", `http://${req.headers.host || "localhost"}`);
     const pathName = String(url.pathname || "/").replace(/\/+$/, "") || "/";
-    if (
-      pathName !== MESA_ORDER_PATH &&
-      pathName !== DASHBOARD_PASSWORD_VERIFY_PATH &&
-      pathName !== DASHBOARD_PASSWORD_HASH_PATH &&
-      pathName !== DASHBOARD_DB_LOGIN_PATH &&
-      pathName !== DASHBOARD_VALIDATE_SESSION_PATH &&
-      pathName !== DASHBOARD_STOCK_RECIPE_AI_PATH &&
-      pathName !== MAESTRO_CREATE_DEMO_PATH &&
-      pathName !== MAESTRO_DELETE_DEMO_PATH &&
-      pathName !== MAESTRO_RUN_MIGRATIONS_PATH
-    ) {
+    if (!MESA_API_ALLOWED_PATHS.has(pathName)) {
       return sendJson(res, 404, { error: "Not found" });
     }
 
@@ -262,6 +330,79 @@ const mesaApiServer = http.createServer(async (req, res) => {
         return sendJson(res, 200, { recipe });
       } catch (error) {
         return sendJson(res, 500, { error: error?.message || "No se pudo analizar la receta" });
+      }
+    }
+
+    if (pathName === PUBLIC_REGISTER_PATH) {
+      const ip = clientIpFromRequest(req);
+      if (!checkRegisterRateLimit(ip)) {
+        return sendJson(res, 429, { ok: false, error: "Demasiados registros. Probá más tarde." });
+      }
+      try {
+        const result = await registerPublicDemo({
+          email: body.email,
+          password: body.password,
+          businessName: body.businessName || body.business_name,
+          phone: body.phone,
+          slug: body.slug || body.tenantSlug || body.demoSlug
+        });
+        return sendJson(res, 201, result);
+      } catch (error) {
+        const msg = error?.message || String(error);
+        const code = /ya existe|ya hay|demo con ese email/i.test(msg) ? 409 : 400;
+        return sendJson(res, code, { ok: false, error: msg });
+      }
+    }
+
+    if (pathName === PUBLIC_LOGIN_PATH) {
+      try {
+        const result = await resolvePublicLogin({
+          email: body.email,
+          password: body.password
+        });
+        if (!result.ok) {
+          const status = result.code === "demo_expired" ? 403 : 401;
+          return sendJson(res, status, result);
+        }
+        return sendJson(res, 200, result);
+      } catch (error) {
+        return sendJson(res, 500, { ok: false, error: error?.message || String(error) });
+      }
+    }
+
+    if (pathName === PLATFORM_LOGIN_PATH) {
+      const auth = verifyPlatformAdminCredentials(body.email, body.password);
+      if (!auth.ok) return sendJson(res, 401, auth);
+      try {
+        const token = createPlatformAdminToken();
+        return sendJson(res, 200, { ok: true, token });
+      } catch (error) {
+        return sendJson(res, 503, { ok: false, error: error?.message || String(error) });
+      }
+    }
+
+    if (pathName === PLATFORM_TENANTS_LIST_PATH) {
+      const auth = requirePlatformAuth(req);
+      if (!auth.ok) return sendJson(res, auth.status || 401, { ok: false, error: auth.error });
+      try {
+        const tenants = await listPlatformTenants();
+        return sendJson(res, 200, { ok: true, tenants });
+      } catch (error) {
+        return sendJson(res, 500, { ok: false, error: error?.message || String(error) });
+      }
+    }
+
+    if (pathName === PLATFORM_TENANT_PATCH_PATH) {
+      const auth = requirePlatformAuth(req);
+      if (!auth.ok) return sendJson(res, auth.status || 401, { ok: false, error: auth.error });
+      const restaurantId = body.restaurantId || body.tenantId;
+      try {
+        const result = await patchPlatformTenant(restaurantId, body.patch || body);
+        return sendJson(res, 200, result);
+      } catch (error) {
+        const msg = error?.message || String(error);
+        const code = /no encontrado/i.test(msg) ? 404 : 400;
+        return sendJson(res, code, { ok: false, error: msg });
       }
     }
 
