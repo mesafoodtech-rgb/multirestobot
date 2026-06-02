@@ -1,3 +1,25 @@
+@media print {
+  body.kitchen-print-mode * {
+    visibility: hidden;
+  }
+  body.kitchen-print-mode #kitchen-print-area,
+  body.kitchen-print-mode #kitchen-print-area * {
+    visibility: visible;
+  }
+  body.kitchen-print-mode #kitchen-print-area {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    padding: 0.5rem;
+    background: white !important;
+    color: black !important;
+  }
+  body.kitchen-print-mode #kitchen-print-area .kitchen-print-hide {
+    display: none !important;
+  }
+}
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;

@@ -300,11 +300,21 @@ async function saveOrder(payload) {
   if (payload.subtotalAmount != null) {
     row.subtotal_amount = Number(payload.subtotalAmount);
   }
+  if (payload.discountAmount != null && Number(payload.discountAmount) > 0) {
+    row.discount_amount = Number(payload.discountAmount);
+  }
+  if (payload.tipAmount != null && Number(payload.tipAmount) > 0) {
+    row.tip_amount = Number(payload.tipAmount);
+  }
   if ("deliveryFee" in payload) {
     row.delivery_fee = payload.deliveryFee;
   }
   if ("finalTotalAmount" in payload) {
     row.final_total_amount = payload.finalTotalAmount;
+  }
+  if (payload.finalTotalAmount != null && payload.totalAmount == null) {
+    row.total_amount = Number(payload.finalTotalAmount);
+    row.total_price = Number(payload.finalTotalAmount);
   }
   if ("paymentLink" in payload) {
     row.payment_link = payload.paymentLink;

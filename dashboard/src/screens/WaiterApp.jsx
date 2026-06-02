@@ -16,6 +16,8 @@ import {
   subtotalForOrder,
   tableNumberLabel
 } from "../lib/format";
+import { computeCheckoutTotals } from "../lib/checkoutAdjustments";
+import { readWaiterFavoriteIds, toggleWaiterFavorite } from "../lib/waiterFavorites";
 
 const HISTORY_HOURS = 18;
 /** El contador del tab "Pedidos realizados" se oculta tras este tiempo (ms). */
@@ -123,6 +125,9 @@ export default function WaiterApp({ onLogout }) {
   const toastTimerRef = useRef(null);
   /** Oculta el numerito del tab tras 1 min (se reinicia si cambia la cantidad del día). */
   const [hidePedidosRealizadosBadge, setHidePedidosRealizadosBadge] = useState(false);
+  const [favoriteIds, setFavoriteIds] = useState([]);
+  const [discountDraft, setDiscountDraft] = useState("");
+  const [tipDraft, setTipDraft] = useState("");
 
   const menuById = useMemo(() => {
     const m = new Map();
@@ -137,6 +142,30 @@ export default function WaiterApp({ onLogout }) {
     [cartById, menuById]
   );
   const totalAmount = useMemo(() => cartTotal(cartById, menuById), [cartById, menuById]);
+  const checkoutTotals = useMemo(
+    () => computeCheckoutTotals(totalAmount, discountDraft, tipDraft),
+    [totalAmount, discountDraft, tipDraft]
+  );
+
+  const sessionUserId = getSession()?.userId || getSession()?.username || "anon";
+
+  useEffect(() => {
+    if (!restaurantId) {
+      setFavoriteIds([]);
+      return;
+    }
+    setFavoriteIds(readWaiterFavoriteIds(restaurantId, sessionUserId));
+  }, [restaurantId, sessionUserId]);
+
+  const favoriteMenuItems = useMemo(() => {
+    const set = new Set(favoriteIds);
+    return menuItems.filter((it) => it?.id && set.has(it.id));
+  }, [menuItems, favoriteIds]);
+
+  function handleToggleFavorite(itemId) {
+    const next = toggleWaiterFavorite(restaurantId, sessionUserId, itemId);
+    setFavoriteIds(next);
+  }
 
   useEffect(() => {
     if (!toast) return undefined;
@@ -347,6 +376,11 @@ export default function WaiterApp({ onLogout }) {
       ? `Mozo · Delivery${userPart}`
       : `Mozo · Mesa: ${tableNum}${userPart}`;
 
+    const { subtotal, discount, tip, finalTotal } = computeCheckoutTotals(
+      totalAmount,
+      discountDraft,
+      tipDraft
+    );
     const row = {
       restaurant_id: restaurantId,
       customer_number: botNumber,
@@ -357,11 +391,14 @@ export default function WaiterApp({ onLogout }) {
       payment_method: deliveryDetails ? "efectivo" : "efectivo_mesa",
       payment_status: "pending",
       fulfillment_type: deliveryDetails ? "delivery_mozo" : "mesa",
-      total_price: totalAmount,
-      total_amount: totalAmount,
-      subtotal_amount: totalAmount,
+      total_price: finalTotal,
+      total_amount: finalTotal,
+      subtotal_amount: subtotal,
+      final_total_amount: finalTotal,
       created_at: new Date().toISOString()
     };
+    if (discount > 0) row.discount_amount = discount;
+    if (tip > 0) row.tip_amount = tip;
     if (deliveryDetails) {
       row.address = deliveryAddressTrimmed;
       row.scheduled_delivery_at = scheduledAt;
@@ -396,6 +433,8 @@ export default function WaiterApp({ onLogout }) {
     if (data) {
       setOrders((prev) => [data, ...prev.filter((o) => o.id !== data.id)]);
       setCartById({});
+      setDiscountDraft("");
+      setTipDraft("");
       setTableNumber("");
       setDeliveryAddress("");
       setScheduledDeliveryDate(localDateInputValue());
@@ -896,6 +935,56 @@ export default function WaiterApp({ onLogout }) {
               )}
             </div>
 
+            {favoriteMenuItems.length > 0 ? (
+              <section className="rounded-xl border border-amber-500/30 bg-amber-950/20 p-4">
+                <h2 className="text-xs font-semibold uppercase tracking-wider text-amber-200/90">
+                  Favoritos
+                </h2>
+                <div className="mt-2 space-y-2">
+                  {favoriteMenuItems.map((item) => {
+                    const q = cartById[item.id] || 0;
+                    return (
+                      <div
+                        key={`fav-${item.id}`}
+                        className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-500/20 bg-slate-900/50 px-3 py-2"
+                      >
+                        <div className="min-w-0 flex-1">
+                          <p className="font-medium text-slate-100">{item.name}</p>
+                          <p className="text-sm text-emerald-300/90">{currency(item.price)}</p>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            title="Quitar de favoritos"
+                            onClick={() => handleToggleFavorite(item.id)}
+                            className="text-amber-300 hover:text-amber-200"
+                          >
+                            ★
+                          </button>
+                          <button
+                            type="button"
+                            disabled={q < 1}
+                            onClick={() => removeFromCart(item.id)}
+                            className="h-9 w-9 rounded-lg border border-slate-600 text-slate-300 hover:bg-slate-800 disabled:opacity-30"
+                          >
+                            −
+                          </button>
+                          <span className="w-6 text-center tabular-nums font-semibold">{q}</span>
+                          <button
+                            type="button"
+                            onClick={() => addToCart(item.id)}
+                            className="h-9 w-9 rounded-lg bg-emerald-600 font-semibold text-white hover:bg-emerald-500"
+                          >
+                            +
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </section>
+            ) : null}
+
             {menuItems.length > 0 ? (
               <div className="rounded-xl border border-slate-700 bg-slate-900/60 p-4">
                 <label className="block">
@@ -950,6 +1039,22 @@ export default function WaiterApp({ onLogout }) {
                           <div className="flex items-center gap-2">
                             <button
                               type="button"
+                              title={
+                                favoriteIds.includes(item.id)
+                                  ? "Quitar de favoritos"
+                                  : "Agregar a favoritos"
+                              }
+                              onClick={() => handleToggleFavorite(item.id)}
+                              className={
+                                favoriteIds.includes(item.id)
+                                  ? "text-amber-300 hover:text-amber-200"
+                                  : "text-slate-600 hover:text-amber-300/80"
+                              }
+                            >
+                              {favoriteIds.includes(item.id) ? "★" : "☆"}
+                            </button>
+                            <button
+                              type="button"
                               disabled={q < 1}
                               onClick={() => removeFromCart(item.id)}
                               className="h-10 w-10 rounded-lg border border-slate-600 text-lg leading-none text-slate-300 hover:bg-slate-800 disabled:opacity-30"
@@ -974,10 +1079,42 @@ export default function WaiterApp({ onLogout }) {
             )}
 
             <div className="sticky bottom-0 border-t border-slate-800 bg-slate-950/95 py-4 backdrop-blur">
+              <div className="mb-3 grid gap-2 rounded-xl border border-slate-700 bg-slate-900/80 px-4 py-3 sm:grid-cols-2">
+                <label className="block text-xs text-slate-400">
+                  Descuento ($)
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={discountDraft}
+                    onChange={(e) => setDiscountDraft(e.target.value)}
+                    placeholder="0"
+                    className="mt-1 h-9 w-full rounded-lg border border-slate-600 bg-slate-950 px-2 text-sm text-slate-100"
+                  />
+                </label>
+                <label className="block text-xs text-slate-400">
+                  Propina ($)
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={tipDraft}
+                    onChange={(e) => setTipDraft(e.target.value)}
+                    placeholder="0"
+                    className="mt-1 h-9 w-full rounded-lg border border-slate-600 bg-slate-950 px-2 text-sm text-slate-100"
+                  />
+                </label>
+              </div>
               <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-emerald-500/30 bg-emerald-950/20 px-4 py-3">
                 <div>
-                  <p className="text-xs text-slate-400">Total</p>
-                  <p className="text-xl font-bold text-emerald-200">{currency(totalAmount)}</p>
+                  <p className="text-xs text-slate-400">
+                    Subtotal {currency(checkoutTotals.subtotal)}
+                    {checkoutTotals.discount > 0 ? (
+                      <span className="text-rose-300"> · −{currency(checkoutTotals.discount)}</span>
+                    ) : null}
+                    {checkoutTotals.tip > 0 ? (
+                      <span className="text-sky-300"> · +{currency(checkoutTotals.tip)} propina</span>
+                    ) : null}
+                  </p>
+                  <p className="text-xl font-bold text-emerald-200">{currency(checkoutTotals.finalTotal)}</p>
                   <p className="text-[11px] text-slate-500">{cartLines.length} ítem(s)</p>
                 </div>
                 <button

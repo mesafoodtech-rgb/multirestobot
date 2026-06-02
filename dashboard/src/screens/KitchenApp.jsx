@@ -132,17 +132,35 @@ export default function KitchenApp({ onLogout }) {
             <h1 className="text-lg font-semibold text-white">Cocina</h1>
             <p className="text-xs text-slate-400">{restaurantName || "…"}</p>
           </div>
-          <button
-            type="button"
-            onClick={() => onLogout?.()}
-            className="rounded-lg border border-slate-600 px-3 py-1.5 text-sm text-slate-300 hover:bg-slate-800"
-          >
-            Salir
-          </button>
+          <div className="flex flex-wrap gap-2">
+            {queue.length > 0 ? (
+              <button
+                type="button"
+                onClick={() => {
+                  document.body.classList.add("kitchen-print-mode");
+                  window.print();
+                  window.setTimeout(() => document.body.classList.remove("kitchen-print-mode"), 500);
+                }}
+                className="rounded-lg border border-slate-600 px-3 py-1.5 text-sm text-slate-300 hover:bg-slate-800"
+              >
+                Imprimir cola
+              </button>
+            ) : null}
+            <button
+              type="button"
+              onClick={() => onLogout?.()}
+              className="rounded-lg border border-slate-600 px-3 py-1.5 text-sm text-slate-300 hover:bg-slate-800"
+            >
+              Salir
+            </button>
+          </div>
         </div>
       </header>
 
-      <main className="mx-auto max-w-4xl px-4 py-6">
+      <main id="kitchen-print-area" className="mx-auto max-w-4xl px-4 py-6">
+        <p className="kitchen-print-hide mb-4 hidden text-lg font-bold text-black print:block">
+          Cocina — {restaurantName || ""} — {new Date().toLocaleString("es-AR")}
+        </p>
         {error ? (
           <div className="mb-4 rounded-lg border border-rose-500/35 bg-rose-500/10 px-3 py-2 text-sm text-rose-200">
             {error}
@@ -167,7 +185,7 @@ export default function KitchenApp({ onLogout }) {
               return (
                 <li
                   key={order.id}
-                  className="rounded-xl border border-amber-500/25 bg-slate-900/80 p-4 shadow-lg shadow-black/20"
+                  className="kitchen-order-card rounded-xl border border-amber-500/25 bg-slate-900/80 p-4 shadow-lg shadow-black/20 print:mb-4 print:break-inside-avoid print:border print:border-gray-400 print:bg-white print:text-black print:shadow-none"
                 >
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div>

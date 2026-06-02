@@ -9,6 +9,9 @@ import {
 } from "../lib/stockAlerts";
 import { supabase } from "../supabaseClient";
 import { withRestaurantScope } from "../lib/restaurantTenant";
+import { downloadStockCsv } from "../lib/stockExport";
+import { logStockMovement, movementTypeLabel } from "../lib/stockMovements";
+import { downloadCsv } from "../lib/statsConfig";
 
 const STOCK_UNIT_OPTIONS = ["KG", "G", "L", "ML", "UNIDAD", "PAQUETE"];
 const STOCK_AI_PATH = "/api/dashboard/stock/recipe-ai";
@@ -226,6 +229,9 @@ export default function StockManagerPanel({ restaurantId, onLowStockCountChange 
   const [deletingRecipeId, setDeletingRecipeId] = useState(null);
   const [showAiAssistant, setShowAiAssistant] = useState(false);
   const [analyzingRecipeText, setAnalyzingRecipeText] = useState(false);
+  const [stockMovements, setStockMovements] = useState([]);
+  const [loadingMovements, setLoadingMovements] = useState(false);
+  const [movementsError, setMovementsError] = useState("");
 
   const stockByName = useMemo(() => {
     const map = new Map();
@@ -369,6 +375,42 @@ export default function StockManagerPanel({ restaurantId, onLowStockCountChange 
     };
   }, [restaurantId]);
 
+  async function refreshStockMovements() {
+    if (!restaurantId) {
+      setStockMovements([]);
+      return;
+    }
+    setLoadingMovements(true);
+    setMovementsError("");
+    const { data, error } = await supabase
+      .from("stock_movements")
+      .select(
+        "id, ingredient_name, movement_type, quantity_before, quantity_after, delta, unit, reference_label, created_at"
+      )
+      .eq("restaurant_id", restaurantId)
+      .order("created_at", { ascending: false })
+      .limit(150);
+    setLoadingMovements(false);
+    if (error) {
+      if (/does not exist|42P01/i.test(error.message || "")) {
+        setMovementsError(
+          "Ejecutá la migración dashboard/sql/stock_movements.sql en Supabase para ver el historial."
+        );
+        setStockMovements([]);
+        return;
+      }
+      setMovementsError(`No se pudo cargar historial: ${error.message}`);
+      setStockMovements([]);
+      return;
+    }
+    setStockMovements(data || []);
+  }
+
+  useEffect(() => {
+    if (activeSection !== "history" || !restaurantId) return;
+    refreshStockMovements();
+  }, [activeSection, restaurantId]);
+
   function updateRecipeForm(patch) {
     setRecipeForm((prev) => ({ ...prev, ...patch }));
   }
@@ -478,6 +520,15 @@ export default function StockManagerPanel({ restaurantId, onLowStockCountChange 
     setNewStockValue("");
     setNewStockUnit("UNIDAD");
     setStockFlash(`${name} agregado al stock en ${unit}.`);
+    await logStockMovement(supabase, restaurantId, {
+      stockItemId: data.id,
+      ingredientName: name,
+      movementType: "replenish",
+      quantityBefore: 0,
+      quantityAfter: parseQuantityValueByUnit(data.current_stock, unit, 0),
+      unit,
+      referenceLabel: "Alta de ingrediente"
+    });
   }
 
   async function saveStockItemRow(item) {
@@ -557,6 +608,17 @@ export default function StockManagerPanel({ restaurantId, onLowStockCountChange 
       flash = `${displayName}: nombre y stock actualizados (${formatQuantity(currentStock)} ${normalizeStockUnit(unit)}).`;
     }
     setStockFlash(flash);
+    if (!qtyUnchanged) {
+      await logStockMovement(supabase, restaurantId, {
+        stockItemId: item.id,
+        ingredientName: displayName,
+        movementType: "adjustment",
+        quantityBefore: currentValueDb,
+        quantityAfter: currentStock,
+        unit,
+        referenceLabel: "Ajuste manual"
+      });
+    }
   }
 
   async function reponerStockItem(item) {
@@ -599,6 +661,15 @@ export default function StockManagerPanel({ restaurantId, onLowStockCountChange 
     setStockFlash(
       `${data.name || item.name}: stock repuesto a ${formatQuantity(currentStock)} ${normalizeStockUnit(unit)}.`
     );
+    await logStockMovement(supabase, restaurantId, {
+      stockItemId: item.id,
+      ingredientName: data.name || item.name,
+      movementType: "replenish",
+      quantityBefore: currentValueDb,
+      quantityAfter: currentStock,
+      unit,
+      referenceLabel: "Reposición"
+    });
   }
 
   async function saveStockItemThreshold(item) {
@@ -702,6 +773,15 @@ export default function StockManagerPanel({ restaurantId, onLowStockCountChange 
     });
     setEditingStockNameId((prev) => (prev === item.id ? null : prev));
     setStockFlash(`${item.name} eliminado del stock.`);
+    await logStockMovement(supabase, restaurantId, {
+      stockItemId: item.id,
+      ingredientName: item.name,
+      movementType: "delete",
+      quantityBefore: parseQuantityValueByUnit(item.current_stock, item.unit, 0),
+      quantityAfter: 0,
+      unit: normalizeStockUnit(item.unit),
+      referenceLabel: "Eliminación"
+    });
   }
 
   function startEditingRecipe(recipe) {
@@ -998,6 +1078,19 @@ export default function StockManagerPanel({ restaurantId, onLowStockCountChange 
         return next;
       });
       setStockFlash(`Se descontó la receta ${recipe.name} x${formatQuantity(useCount)} del stock.`);
+      for (const update of pendingUpdates) {
+        const before = parseQuantityValueByUnit(update.item.current_stock, update.item.unit, 0);
+        await logStockMovement(supabase, restaurantId, {
+          stockItemId: update.item.id,
+          ingredientName: update.item.name,
+          movementType: "recipe_use",
+          quantityBefore: before,
+          quantityAfter: update.nextStock,
+          unit: normalizeStockUnit(update.item.unit),
+          referenceLabel: recipe.name
+        });
+      }
+      if (activeSection === "history") refreshStockMovements();
     } catch (error) {
       setStockError(`No se pudo utilizar la receta ${recipe.name}: ${error.message}`);
     } finally {
@@ -1096,6 +1189,16 @@ export default function StockManagerPanel({ restaurantId, onLowStockCountChange 
           Administrá ingredientes del inventario y recetas. El stock y los ingredientes se guardan en mayúsculas para
           evitar duplicados por formato.
         </p>
+        <div className="mt-3 flex flex-wrap gap-2">
+          <button
+            type="button"
+            disabled={!stockItems.length}
+            onClick={() => downloadStockCsv(stockItems)}
+            className="rounded-lg border border-cyan-600/50 bg-cyan-500/10 px-3 py-1.5 text-xs font-medium text-cyan-200 hover:bg-cyan-500/20 disabled:opacity-50"
+          >
+            Descargar CSV stock
+          </button>
+        </div>
         {lowStockItems.length > 0 ? (
           <button
             type="button"
@@ -1144,7 +1247,118 @@ export default function StockManagerPanel({ restaurantId, onLowStockCountChange 
           Alerta
           {lowStockItems.length > 0 ? ` (${lowStockItems.length})` : ""}
         </button>
+        <button
+          type="button"
+          onClick={() => setActiveSection("history")}
+          className={`rounded-lg px-4 py-2 text-sm font-medium transition ${
+            activeSection === "history"
+              ? "bg-sky-500 text-slate-950"
+              : "border border-slate-700 bg-slate-900 text-slate-300 hover:bg-slate-800"
+          }`}
+        >
+          Historial
+        </button>
       </div>
+
+      {activeSection === "history" && (
+        <div className="space-y-3 rounded-xl border border-slate-700 bg-slate-900 p-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h3 className="text-sm font-semibold text-slate-200">Movimientos de inventario</h3>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => refreshStockMovements()}
+                disabled={loadingMovements}
+                className="rounded-lg border border-slate-600 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800 disabled:opacity-50"
+              >
+                {loadingMovements ? "Cargando…" : "Actualizar"}
+              </button>
+              <button
+                type="button"
+                disabled={!stockMovements.length}
+                onClick={() => {
+                  const stamp = new Date().toISOString().slice(0, 10);
+                  downloadCsv(
+                    `movimientos-stock-${stamp}.csv`,
+                    [
+                      "fecha",
+                      "ingrediente",
+                      "tipo",
+                      "antes",
+                      "despues",
+                      "delta",
+                      "unidad",
+                      "referencia"
+                    ],
+                    stockMovements.map((m) => [
+                      m.created_at
+                        ? new Date(m.created_at).toLocaleString("es-AR", {
+                            dateStyle: "short",
+                            timeStyle: "short"
+                          })
+                        : "",
+                      m.ingredient_name || "",
+                      movementTypeLabel(m.movement_type),
+                      formatQuantity(m.quantity_before),
+                      formatQuantity(m.quantity_after),
+                      formatQuantity(m.delta),
+                      normalizeStockUnit(m.unit),
+                      m.reference_label || ""
+                    ])
+                  );
+                }}
+                className="rounded-lg border border-cyan-600/50 bg-cyan-500/10 px-3 py-1.5 text-xs font-medium text-cyan-200 hover:bg-cyan-500/20 disabled:opacity-50"
+              >
+                CSV historial
+              </button>
+            </div>
+          </div>
+          {movementsError ? (
+            <p className="text-xs text-amber-200/90">{movementsError}</p>
+          ) : null}
+          {loadingMovements ? (
+            <p className="text-sm text-slate-400">Cargando movimientos…</p>
+          ) : stockMovements.length === 0 ? (
+            <p className="text-sm text-slate-400">Todavía no hay movimientos registrados.</p>
+          ) : (
+            <div className="max-h-[420px] overflow-auto rounded-lg border border-slate-800">
+              <table className="w-full min-w-[640px] text-left text-xs">
+                <thead className="sticky top-0 bg-slate-950 text-slate-400">
+                  <tr>
+                    <th className="px-3 py-2 font-medium">Fecha</th>
+                    <th className="px-3 py-2 font-medium">Ingrediente</th>
+                    <th className="px-3 py-2 font-medium">Tipo</th>
+                    <th className="px-3 py-2 font-medium">Δ</th>
+                    <th className="px-3 py-2 font-medium">Referencia</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800 text-slate-200">
+                  {stockMovements.map((m) => (
+                    <tr key={m.id} className="hover:bg-slate-800/40">
+                      <td className="whitespace-nowrap px-3 py-2 text-slate-400">
+                        {m.created_at
+                          ? new Date(m.created_at).toLocaleString("es-AR", {
+                              dateStyle: "short",
+                              timeStyle: "short"
+                            })
+                          : "—"}
+                      </td>
+                      <td className="px-3 py-2 font-medium">{m.ingredient_name || "—"}</td>
+                      <td className="px-3 py-2">{movementTypeLabel(m.movement_type)}</td>
+                      <td className="px-3 py-2 tabular-nums">
+                        {formatQuantity(m.delta)} {normalizeStockUnit(m.unit)}
+                      </td>
+                      <td className="max-w-[200px] truncate px-3 py-2 text-slate-400">
+                        {m.reference_label || "—"}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
 
       {activeSection === "stock" && (
         <div className="space-y-4">

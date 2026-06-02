@@ -39,6 +39,11 @@ import MesaQrLinksPanel from "../components/MesaQrLinksPanel";
 import StockManagerPanel from "../components/StockManagerPanel";
 import QrMenuPanel from "../components/QrMenuPanel";
 import OrdersDateRangeCalendar from "../components/OrdersDateRangeCalendar";
+import {
+  downloadOrdersCsv,
+  fetchAllOrdersForExport
+} from "../lib/ordersExport";
+import { downloadUnavailableMenuCsv } from "../lib/stockExport";
 import { resolveRestaurantForDashboard, withRestaurantScope } from "../lib/restaurantTenant";
 import {
   readServicePlanFromMetadata,
@@ -405,6 +410,7 @@ export default function AdminApp({ onLogout }) {
   const [restaurantId, setRestaurantId] = useState("");
   const [restaurantName, setRestaurantName] = useState("");
   const [loadingOrders, setLoadingOrders] = useState(true);
+  const [exportingOrdersCsv, setExportingOrdersCsv] = useState(false);
   const [loadingMenu, setLoadingMenu] = useState(true);
   const [savingItemId, setSavingItemId] = useState(null);
   const [savingOrderId, setSavingOrderId] = useState(null);
@@ -742,6 +748,31 @@ export default function AdminApp({ onLogout }) {
     const nextPage = ordersPage + 1;
     setOrdersPage(nextPage);
     loadOrders(restaurantId, { page: nextPage, append: true, todayOnly: ordersTodayOnly });
+  }
+
+  async function exportOrdersCsv() {
+    if (!restaurantId || exportingOrdersCsv) return;
+    setExportingOrdersCsv(true);
+    setError("");
+    try {
+      const filtersForQuery = effectiveOrderFilters(orderFilters, ordersTodayOnly);
+      const rows = await fetchAllOrdersForExport(supabase, (query) => {
+        let q = query.eq("restaurant_id", restaurantId);
+        return applyOrderFilters(q, filtersForQuery);
+      });
+      if (!rows.length) {
+        setError("No hay pedidos para exportar con los filtros actuales.");
+        return;
+      }
+      downloadOrdersCsv(rows, {
+        dateFrom: filtersForQuery.dateFrom || "",
+        dateTo: filtersForQuery.dateTo || ""
+      });
+    } catch (e) {
+      setError(e?.message || "No se pudo exportar pedidos.");
+    } finally {
+      setExportingOrdersCsv(false);
+    }
   }
 
   async function loadMenu() {
@@ -2300,6 +2331,8 @@ export default function AdminApp({ onLogout }) {
               total={ordersTotal}
               shown={orders.length}
               deliveryEnabled={deliveryEnabled}
+              onExportCsv={exportOrdersCsv}
+              exportingCsv={exportingOrdersCsv}
             />
 
             {hiddenUpdatesCount > 0 ? (
@@ -3008,14 +3041,31 @@ export default function AdminApp({ onLogout }) {
                 <div>
                   <h2 className="text-sm font-semibold text-slate-200">Productos del menu</h2>
                   <p className="text-xs text-slate-400">Administra precios, disponibilidad y alta de productos.</p>
+                  {menuItems.some((it) => it && it.available === false) ? (
+                    <p className="mt-1 text-xs text-rose-300/90">
+                      {menuItems.filter((it) => it && it.available === false).length} producto(s) marcados como
+                      agotados.
+                    </p>
+                  ) : null}
                 </div>
-                <button
-                  type="button"
-                  onClick={() => setShowAddForm((prev) => !prev)}
-                  className="shrink-0 rounded-lg bg-emerald-500 px-3 py-2 text-sm font-semibold text-slate-950"
-                >
-                  Añadir Producto
-                </button>
+                <div className="flex flex-wrap gap-2">
+                  {menuItems.some((it) => it && it.available === false) ? (
+                    <button
+                      type="button"
+                      onClick={() => downloadUnavailableMenuCsv(menuItems)}
+                      className="shrink-0 rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-sm font-medium text-rose-200 hover:bg-rose-500/20"
+                    >
+                      CSV agotados
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    onClick={() => setShowAddForm((prev) => !prev)}
+                    className="shrink-0 rounded-lg bg-emerald-500 px-3 py-2 text-sm font-semibold text-slate-950"
+                  >
+                    Añadir Producto
+                  </button>
+                </div>
               </div>
               <label className="mt-4 block">
                 <span className="sr-only">Buscar productos</span>
@@ -3663,7 +3713,17 @@ const DELIVERY_PIPELINE_ORDER_STATUSES = [
   "delivery_denial_notify_failed"
 ];
 
-function OrdersFilterBar({ filters, todayOnly, onApply, onReset, total, shown, deliveryEnabled = true }) {
+function OrdersFilterBar({
+  filters,
+  todayOnly,
+  onApply,
+  onReset,
+  total,
+  shown,
+  deliveryEnabled = true,
+  onExportCsv,
+  exportingCsv = false
+}) {
   const [expanded, setExpanded] = useState(false);
   const [draft, setDraft] = useState(filters);
   const [draftTodayOnly, setDraftTodayOnly] = useState(todayOnly);
@@ -3909,7 +3969,17 @@ function OrdersFilterBar({ filters, todayOnly, onApply, onReset, total, shown, d
             <span className="text-xs text-slate-500">
               {shown} de {total} resultados con los filtros actuales
             </span>
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
+              {typeof onExportCsv === "function" ? (
+                <button
+                  type="button"
+                  disabled={exportingCsv}
+                  onClick={() => onExportCsv()}
+                  className="rounded-lg border border-cyan-600/50 bg-cyan-500/10 px-3 py-1.5 text-xs font-medium text-cyan-200 hover:bg-cyan-500/20 disabled:opacity-50"
+                >
+                  {exportingCsv ? "Exportando…" : "Descargar CSV"}
+                </button>
+              ) : null}
               <button
                 type="button"
                 onClick={onReset}

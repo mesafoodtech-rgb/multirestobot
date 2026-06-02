@@ -406,6 +406,19 @@ const mesaApiServer = http.createServer(async (req, res) => {
       return sendJson(res, 400, { error: "Total inválido" });
     }
 
+    const discountRaw = Number(body.discountAmount);
+    const tipRaw = Number(body.tipAmount);
+    const discountAmount =
+      Number.isFinite(discountRaw) && discountRaw > 0
+        ? Math.min(totalAmount, Math.round(discountRaw * 100) / 100)
+        : 0;
+    const tipAmount =
+      Number.isFinite(tipRaw) && tipRaw > 0 ? Math.round(tipRaw * 100) / 100 : 0;
+    const finalTotalAmount = Math.max(
+      0,
+      Math.round((totalAmount - discountAmount + tipAmount) * 100) / 100
+    );
+
     const botNumber = String(restaurant.whatsapp_number || "").replace(/\D/g, "") || "0";
     const paymentMethod = wantsCash ? "efectivo_mesa" : "mercadopago";
     const paymentStatus = "pending";
@@ -423,8 +436,11 @@ const mesaApiServer = http.createServer(async (req, res) => {
       paymentStatus,
       fulfillmentType: "mesa",
       tableNumber,
-      totalAmount,
+      totalAmount: finalTotalAmount,
       subtotalAmount: totalAmount,
+      discountAmount: discountAmount > 0 ? discountAmount : null,
+      tipAmount: tipAmount > 0 ? tipAmount : null,
+      finalTotalAmount,
       rawRequest: null
     });
 
@@ -434,7 +450,7 @@ const mesaApiServer = http.createServer(async (req, res) => {
       const restaurantName = await getRestaurantNameById(restaurantId);
       const paymentUrl = await createPaymentPreference({
         orderId: order.id,
-        totalAmount,
+        totalAmount: finalTotalAmount,
         restaurantName
       });
 

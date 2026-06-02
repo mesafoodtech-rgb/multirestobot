@@ -238,7 +238,14 @@ export function subtotalForOrder(order) {
 export function effectiveOrderTotal(order) {
   const ft = Number(order.final_total_amount);
   if (Number.isFinite(ft) && ft > 0) return ft;
-  return subtotalForOrder(order);
+  let total = subtotalForOrder(order);
+  const fee = Number(order.delivery_fee);
+  if (Number.isFinite(fee) && fee > 0) total += fee;
+  const discount = Number(order.discount_amount);
+  if (Number.isFinite(discount) && discount > 0) total -= discount;
+  const tip = Number(order.tip_amount);
+  if (Number.isFinite(tip) && tip > 0) total += tip;
+  return Math.max(0, Math.round(total * 100) / 100);
 }
 
 export function playNotification() {

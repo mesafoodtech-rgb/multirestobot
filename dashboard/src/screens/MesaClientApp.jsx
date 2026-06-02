@@ -4,6 +4,7 @@ import { supabase } from "../supabaseClient";
 import { resolveRestaurantForDashboard } from "../lib/restaurantTenant";
 import { useDemoTenant } from "../lib/DemoTenantContext";
 import { currency } from "../lib/format";
+import { computeCheckoutTotals } from "../lib/checkoutAdjustments";
 
 function buildCartLines(cartById, menuById) {
   const names = [];
@@ -121,6 +122,8 @@ export default function MesaClientApp() {
 
   const [confirmDialog, setConfirmDialog] = useState(null);
   const confirmResolverRef = useRef(null);
+  const [discountDraft, setDiscountDraft] = useState("");
+  const [tipDraft, setTipDraft] = useState("");
 
   const visibleMenuItems = useMemo(
     () => menuItems.filter((item) => !shouldHideMesaQrCategory(item?.category)),
@@ -137,6 +140,10 @@ export default function MesaClientApp() {
 
   const cartLines = useMemo(() => buildCartLines(cartById, menuById), [cartById, menuById]);
   const totalAmount = useMemo(() => cartTotal(cartById, menuById), [cartById, menuById]);
+  const checkoutTotals = useMemo(
+    () => computeCheckoutTotals(totalAmount, discountDraft, tipDraft),
+    [totalAmount, discountDraft, tipDraft]
+  );
 
   const menuItemsFiltered = useMemo(() => {
     const raw = String(menuSearchQuery || "").trim().toLowerCase();
@@ -361,12 +368,15 @@ export default function MesaClientApp() {
     setPaymentLink(null);
     setSubmitting(true);
     try {
+      const { discount, tip } = computeCheckoutTotals(totalAmount, discountDraft, tipDraft);
       const payload = {
         restaurantId,
         tableNumber: tableNum,
         paymentMethod: paymentChoice,
         items: cartLines,
-        mesaToken: mesaTokenFromUrl || ""
+        mesaToken: mesaTokenFromUrl || "",
+        ...(discount > 0 ? { discountAmount: discount } : {}),
+        ...(tip > 0 ? { tipAmount: tip } : {})
       };
       const apiCandidates = buildMesaApiCandidates();
       let res = null;
@@ -407,6 +417,8 @@ export default function MesaClientApp() {
 
       setPaymentLink(data?.paymentLink || null);
       setCartById({});
+      setDiscountDraft("");
+      setTipDraft("");
 
       if (paymentChoice === "mp" && data?.paymentLink) {
         setToast("Pedido enviado. Generamos el link de Mercado Pago.");
@@ -503,9 +515,22 @@ export default function MesaClientApp() {
               ))}
             </ul>
           </div>
+          {checkoutTotals.discount > 0 || checkoutTotals.tip > 0 ? (
+            <p className="text-sm text-slate-400">
+              Subtotal {currency(checkoutTotals.subtotal)}
+              {checkoutTotals.discount > 0 ? (
+                <span className="text-rose-300"> · descuento −{currency(checkoutTotals.discount)}</span>
+              ) : null}
+              {checkoutTotals.tip > 0 ? (
+                <span className="text-sky-300"> · propina +{currency(checkoutTotals.tip)}</span>
+              ) : null}
+            </p>
+          ) : null}
           <p className="flex flex-wrap items-baseline justify-between gap-2 border-t border-slate-700/60 pt-2 text-sm">
             <span className="text-slate-500">Total del pedido</span>
-            <span className="text-lg font-bold tabular-nums text-emerald-300">{currency(totalAmount)}</span>
+            <span className="text-lg font-bold tabular-nums text-emerald-300">
+              {currency(checkoutTotals.finalTotal)}
+            </span>
           </p>
         </div>
       )
@@ -595,7 +620,9 @@ export default function MesaClientApp() {
             </div>
             <div className="text-right">
               <p className="text-xs text-slate-500">Total</p>
-              <p className="text-lg font-bold tabular-nums text-emerald-200">{currency(totalAmount)}</p>
+              <p className="text-lg font-bold tabular-nums text-emerald-200">
+                {currency(checkoutTotals.finalTotal)}
+              </p>
             </div>
           </div>
         </div>
@@ -734,7 +761,43 @@ export default function MesaClientApp() {
         </section>
 
         <div className="sticky bottom-0 border-t border-slate-800 bg-slate-950/95 py-4 backdrop-blur">
+          <div className="mb-3 grid gap-2 rounded-xl border border-slate-700 bg-slate-900/80 px-4 py-3 sm:grid-cols-2">
+            <label className="block text-xs text-slate-400">
+              Descuento ($) <span className="text-slate-600">opcional</span>
+              <input
+                type="text"
+                inputMode="decimal"
+                value={discountDraft}
+                onChange={(e) => setDiscountDraft(e.target.value)}
+                disabled={submitting}
+                placeholder="0"
+                className="mt-1 h-9 w-full rounded-lg border border-slate-600 bg-slate-950 px-2 text-sm text-slate-100 disabled:opacity-50"
+              />
+            </label>
+            <label className="block text-xs text-slate-400">
+              Propina ($) <span className="text-slate-600">opcional</span>
+              <input
+                type="text"
+                inputMode="decimal"
+                value={tipDraft}
+                onChange={(e) => setTipDraft(e.target.value)}
+                disabled={submitting}
+                placeholder="0"
+                className="mt-1 h-9 w-full rounded-lg border border-slate-600 bg-slate-950 px-2 text-sm text-slate-100 disabled:opacity-50"
+              />
+            </label>
+          </div>
           <div className="rounded-xl border border-emerald-500/30 bg-emerald-950/20 px-4 py-4">
+            <div className="mb-2 text-xs text-slate-400">
+              Subtotal {currency(checkoutTotals.subtotal)}
+              {checkoutTotals.discount > 0 ? (
+                <span className="text-rose-300"> · −{currency(checkoutTotals.discount)}</span>
+              ) : null}
+              {checkoutTotals.tip > 0 ? (
+                <span className="text-sky-300"> · +{currency(checkoutTotals.tip)} propina</span>
+              ) : null}
+              <span className="text-emerald-300"> · Total {currency(checkoutTotals.finalTotal)}</span>
+            </div>
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
                 <p className="text-xs text-slate-400">Ítems</p>
