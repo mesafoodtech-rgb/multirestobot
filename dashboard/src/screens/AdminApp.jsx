@@ -3256,7 +3256,6 @@ export default function AdminApp({ onLogout }) {
                       <p className="mt-1 text-xs text-slate-500">{item.description || "Sin descripcion"}</p>
                       {menuImagesEnabled ? (
                         <div className="mt-3">
-                          <p className="mb-2 text-xs font-medium text-slate-400">Imagen del plato (WebP optimizado)</p>
                           <MenuItemImageAdmin
                             item={item}
                             disabled={uploadingImageItemId === item.id || savingItemId === item.id}

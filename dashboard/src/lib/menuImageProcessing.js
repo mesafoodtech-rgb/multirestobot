@@ -1,7 +1,7 @@
 const THUMB_MAX_PX = 96;
-const FULL_MAX_PX = 800;
+const FULL_MAX_PX = 600;
 const THUMB_QUALITY = 0.75;
-const FULL_QUALITY = 0.82;
+const FULL_QUALITY = 0.75;
 const MAX_INPUT_BYTES = 12 * 1024 * 1024;
 
 function loadImageFromFile(file) {
