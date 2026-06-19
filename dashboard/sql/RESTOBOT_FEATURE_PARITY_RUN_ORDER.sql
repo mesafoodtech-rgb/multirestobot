@@ -10,6 +10,7 @@
 -- 2) dashboard_users_role_encargado.sql
 -- 3) restaurants_config_columns.sql
 -- 4) stock_manager_tables.sql
+-- 4b) menu_item_images.sql  (fotos WebP de productos + bucket menu-images)
 -- 5) demo_multi_tenant.sql  (tenants por /d/{slug}/…)
 --    Por demo: demo_provision_new_demo.sql (TTL, is_demo=true)
 --    Por cliente real: tenant_provision_production.sql (sin vencimiento, is_demo=false)

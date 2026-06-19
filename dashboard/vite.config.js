@@ -131,6 +131,12 @@ export default defineConfig(({ mode }) => {
     server: {
       host: "0.0.0.0",
       port: 5173,
+      allowedHosts: ["app.mesafood.shop", "demo.mesafood.shop", "localhost", "127.0.0.1"],
+      hmr: {
+        host: "app.mesafood.shop",
+        protocol: "wss",
+        clientPort: 443
+      },
       // El panel llama POST /api/... al mismo origin; sin esto, Vite dev (5173) devolvía 404 para /api/maestro/create-demo.
       proxy: {
         "/api": {

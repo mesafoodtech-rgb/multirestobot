@@ -45,6 +45,7 @@ const METADATA_PATCH_KEYS = new Set([
   "settings_panel_enabled",
   "users_panel_enabled",
   "stock_panel_enabled",
+  "menu_images_enabled",
   "billing_status",
   "owner_email",
   "owner_phone",

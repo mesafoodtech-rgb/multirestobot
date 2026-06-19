@@ -38,6 +38,9 @@ import MaestroPanel from "./MaestroPanel";
 import MesaQrLinksPanel from "../components/MesaQrLinksPanel";
 import StockManagerPanel from "../components/StockManagerPanel";
 import QrMenuPanel from "../components/QrMenuPanel";
+import MenuItemImageAdmin from "../components/MenuItemImageAdmin";
+import { readMenuImagesEnabled } from "../lib/menuImageConfig";
+import { deleteMenuItemImages, uploadMenuItemImages } from "../lib/menuImageStorage";
 import OrdersDateRangeCalendar from "../components/OrdersDateRangeCalendar";
 import {
   downloadOrdersCsv,
@@ -198,6 +201,15 @@ function parseBusinessOpenDaysFromText(rawText) {
 }
 
 function parseBusinessHoursFromOpeningHoursText(rawText) {
+  if (rawText && typeof rawText === "object" && !Array.isArray(rawText)) {
+    const openDays = normalizeBusinessOpenDays(rawText.open_days);
+    const openTime = normalizeBusinessHourValue(rawText.open_time || "");
+    const closeTime = normalizeBusinessHourValue(rawText.close_time || "");
+    if (openDays.length && isValidBusinessHourValue(openTime) && isValidBusinessHourValue(closeTime)) {
+      return { openDays, openTime, closeTime };
+    }
+  }
+
   const text = normalizeBusinessHoursText(rawText);
   if (!text) return null;
 
@@ -255,6 +267,13 @@ function buildOpeningHoursText(openDays, openTime, closeTime) {
     return "";
   }
   return `${formatBusinessDays(normalizedDays)} de ${openTime} a ${closeTime}.`;
+}
+
+function openingHoursToText(value) {
+  if (typeof value === "string") return value;
+  const parsed = parseBusinessHoursFromOpeningHoursText(value);
+  if (!parsed) return "";
+  return buildOpeningHoursText(parsed.openDays, parsed.openTime, parsed.closeTime);
 }
 
 function resolveBusinessHoursFormState(openingHours, metadata) {
@@ -413,6 +432,7 @@ export default function AdminApp({ onLogout }) {
   const [exportingOrdersCsv, setExportingOrdersCsv] = useState(false);
   const [loadingMenu, setLoadingMenu] = useState(true);
   const [savingItemId, setSavingItemId] = useState(null);
+  const [uploadingImageItemId, setUploadingImageItemId] = useState(null);
   const [savingOrderId, setSavingOrderId] = useState(null);
   const [showAddForm, setShowAddForm] = useState(false);
   const [menuSearchQuery, setMenuSearchQuery] = useState("");
@@ -470,6 +490,7 @@ export default function AdminApp({ onLogout }) {
   const [settingsPanelEnabled, setSettingsPanelEnabled] = useState(true);
   const [usersPanelEnabled, setUsersPanelEnabled] = useState(true);
   const [stockPanelEnabled, setStockPanelEnabled] = useState(true);
+  const [menuImagesEnabled, setMenuImagesEnabled] = useState(false);
   const [lowStockAlertCount, setLowStockAlertCount] = useState(0);
   const [loadingConfig, setLoadingConfig] = useState(false);
   const [savingConfig, setSavingConfig] = useState(false);
@@ -836,6 +857,7 @@ export default function AdminApp({ onLogout }) {
       data.metadata && typeof data.metadata === "object" && !Array.isArray(data.metadata)
         ? data.metadata
         : {};
+    const openingHoursTextFromDb = openingHoursToText(data.opening_hours);
     const businessHoursState = resolveBusinessHoursFormState(data.opening_hours || "", metadataObj);
 
     setRestaurantConfig({
@@ -847,7 +869,7 @@ export default function AdminApp({ onLogout }) {
         data.table_count != null && data.table_count !== ""
           ? String(data.table_count)
           : "12",
-      opening_hours: data.opening_hours || "",
+      opening_hours: openingHoursTextFromDb,
       opening_days: businessHoursState.openDays,
       opening_time_from: businessHoursState.openTime,
       opening_time_to: businessHoursState.closeTime,
@@ -872,6 +894,7 @@ export default function AdminApp({ onLogout }) {
     setMercadoPagoEnabled(data.mercadopago_enabled !== false);
     setStatsEnabled(data.stats_enabled !== false);
     setStockPanelEnabled(metadataObj.stock_panel_enabled !== false);
+    setMenuImagesEnabled(readMenuImagesEnabled(metadataObj));
     setOrdersPanelEnabled(readOrdersPanelEnabled(metadataObj));
     setMenuPanelEnabled(readMenuPanelEnabled(metadataObj));
     setSettingsPanelEnabled(readSettingsPanelEnabled(metadataObj));
@@ -1009,7 +1032,7 @@ export default function AdminApp({ onLogout }) {
         data.table_count != null && data.table_count !== ""
           ? String(data.table_count)
           : "12",
-      opening_hours: data.opening_hours || openingHoursText || "",
+      opening_hours: openingHoursToText(data.opening_hours) || openingHoursText || "",
       opening_days: canBuildBusinessHours ? openingDays : restaurantConfig.opening_days,
       opening_time_from: canBuildBusinessHours ? openingTimeFrom : restaurantConfig.opening_time_from,
       opening_time_to: canBuildBusinessHours ? openingTimeTo : restaurantConfig.opening_time_to,
@@ -1163,6 +1186,70 @@ export default function AdminApp({ onLogout }) {
     setRestaurantMetadata(nextMetadata);
     setStockPanelEnabled(Boolean(nextEnabled));
     return { ok: true };
+  }
+
+  async function setMenuImagesEnabledFlag(nextEnabled) {
+    if (!restaurantId) {
+      setError("No hay restaurante cargado.");
+      return { ok: false };
+    }
+    setError("");
+    const nextMetadata = {
+      ...(restaurantMetadata && typeof restaurantMetadata === "object" ? restaurantMetadata : {}),
+      menu_images_enabled: Boolean(nextEnabled)
+    };
+    const { error: updateError } = await supabase
+      .from("restaurants")
+      .update({ metadata: nextMetadata })
+      .eq("id", restaurantId);
+    if (updateError) {
+      setError(`No se pudo guardar Imágenes menú: ${updateError.message}`);
+      return { ok: false, error: updateError };
+    }
+    setRestaurantMetadata(nextMetadata);
+    setMenuImagesEnabled(Boolean(nextEnabled));
+    return { ok: true };
+  }
+
+  async function handleUploadMenuItemImage(itemId, file) {
+    if (!restaurantId || !menuImagesEnabled) return;
+    setError("");
+    setUploadingImageItemId(itemId);
+    try {
+      const paths = await uploadMenuItemImages({ restaurantId, itemId, file });
+      const ok = await updateMenuItem(itemId, paths);
+      if (!ok) return;
+    } catch (e) {
+      setError(e?.message || "No se pudo subir la imagen del producto.");
+    } finally {
+      setUploadingImageItemId(null);
+    }
+  }
+
+  async function handleRemoveMenuItemImage(item) {
+    if (!restaurantId || !menuImagesEnabled || !item?.id) return;
+    const confirmed = await requestConfirm({
+      title: "Quitar imagen",
+      message: `¿Eliminar la imagen de "${item.name}"?`,
+      confirmLabel: "Quitar imagen",
+      tone: "danger"
+    });
+    if (!confirmed) return;
+
+    setError("");
+    setUploadingImageItemId(item.id);
+    try {
+      await deleteMenuItemImages(item);
+      const ok = await updateMenuItem(item.id, {
+        image_thumb_path: null,
+        image_full_path: null
+      });
+      if (!ok) return;
+    } catch (e) {
+      setError(e?.message || "No se pudo eliminar la imagen del producto.");
+    } finally {
+      setUploadingImageItemId(null);
+    }
   }
 
   async function setAdminPanelMetadataFlag(flagKey, nextEnabled, errorLabel) {
@@ -3167,6 +3254,17 @@ export default function AdminApp({ onLogout }) {
                         {normalizeMenuCategoryForStorage(item.category) || "Sin categoria"}
                       </p>
                       <p className="mt-1 text-xs text-slate-500">{item.description || "Sin descripcion"}</p>
+                      {menuImagesEnabled ? (
+                        <div className="mt-3">
+                          <p className="mb-2 text-xs font-medium text-slate-400">Imagen del plato (WebP optimizado)</p>
+                          <MenuItemImageAdmin
+                            item={item}
+                            disabled={uploadingImageItemId === item.id || savingItemId === item.id}
+                            onUpload={(file) => handleUploadMenuItemImage(item.id, file)}
+                            onRemove={() => handleRemoveMenuItemImage(item)}
+                          />
+                        </div>
+                      ) : null}
                     </div>
                     <div className="flex flex-wrap items-center gap-2">
                       <button
@@ -3333,6 +3431,7 @@ export default function AdminApp({ onLogout }) {
             mercadoPagoEnabled={mercadoPagoEnabled}
             statsEnabled={statsEnabled}
             stockPanelEnabled={stockPanelEnabled}
+            menuImagesEnabled={menuImagesEnabled}
             ordersPanelEnabled={ordersPanelEnabled}
             menuPanelEnabled={menuPanelEnabled}
             settingsPanelEnabled={settingsPanelEnabled}
@@ -3350,6 +3449,7 @@ export default function AdminApp({ onLogout }) {
             onWaiterFulfillmentSelectorToggle={setWaiterFulfillmentSelectorFlag}
             onBotRuntimeSwitchesVisibleToggle={setBotRuntimeSwitchesVisibleFlag}
             onStockPanelToggle={setStockPanelEnabledFlag}
+            onMenuImagesToggle={setMenuImagesEnabledFlag}
             statsMetricsConfigurable={statsConfig.metricsConfigurable}
             onStatsMetricsConfigurableToggle={setStatsMetricsConfigurableFlag}
             restaurantMetadata={restaurantMetadata}
@@ -3366,11 +3466,6 @@ export default function AdminApp({ onLogout }) {
                 <span className="font-semibold text-emerald-400/90">
                   {servicePlanLabel(readServicePlanFromMetadata(restaurantMetadata))}
                 </span>
-                {!tenantUsesWhatsappBot(restaurantMetadata) ? (
-                  <span className="block mt-1 text-cyan-200/80">
-                    Este local no incluye bot de WhatsApp: no usa sesión wwebjs ni almacenamiento del bot.
-                  </span>
-                ) : null}
               </p>
             </div>
 
@@ -3503,11 +3598,6 @@ export default function AdminApp({ onLogout }) {
                         />
                       </label>
                     </div>
-                    <span className="block text-xs text-slate-500">
-                      El bot seguirá en silencio fuera de este horario si el switch
-                      <strong className="text-slate-400"> Respetar horario de atención </strong>
-                      está en ON.
-                    </span>
                     {buildOpeningHoursText(
                       restaurantConfig.opening_days,
                       normalizeBusinessHourValue(restaurantConfig.opening_time_from),

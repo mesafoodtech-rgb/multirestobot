@@ -50,6 +50,7 @@ export default function MaestroPanel({
   statsEnabled,
   statsMetricsConfigurable,
   stockPanelEnabled,
+  menuImagesEnabled,
   ordersPanelEnabled,
   menuPanelEnabled,
   settingsPanelEnabled,
@@ -65,6 +66,7 @@ export default function MaestroPanel({
   onWaiterFulfillmentSelectorToggle,
   onBotRuntimeSwitchesVisibleToggle,
   onStockPanelToggle,
+  onMenuImagesToggle,
   onStatsMetricsConfigurableToggle,
   onPublicDashboardBaseUrlSave
 }) {
@@ -358,6 +360,28 @@ export default function MaestroPanel({
       return;
     }
     setLocalOk(nextEnabled ? "Gestor de stock visible en el dashboard." : "Gestor de stock oculto en el dashboard.");
+  }
+
+  async function setMenuImagesFlag(nextEnabled) {
+    if (savingDelivery || savingTables) return;
+    if (typeof onMenuImagesToggle !== "function") {
+      setLocalError("No se pudo actualizar Imágenes menú.");
+      return;
+    }
+    setLocalError("");
+    setLocalOk("");
+    setSavingDelivery(true);
+    const result = await onMenuImagesToggle(Boolean(nextEnabled));
+    setSavingDelivery(false);
+    if (!result?.ok) {
+      setLocalError("No se pudo guardar Imágenes menú.");
+      return;
+    }
+    setLocalOk(
+      nextEnabled
+        ? "Imágenes menú habilitadas (gestor, QR, carta y mozo)."
+        : "Imágenes menú deshabilitadas."
+    );
   }
 
   async function setAdminPanelFlag(flagKey, nextEnabled, errorLabel, okOn, okOff) {
@@ -1223,6 +1247,14 @@ export default function MaestroPanel({
               offHint="OFF · Se oculta la pestaña Carta y QR Mesas."
               disabled={busy}
               onToggle={() => setMesaQrFlag(!mesaQrEnabled)}
+            />
+            <MaestroPanelToggle
+              label="Imágenes menú"
+              enabled={menuImagesEnabled}
+              onHint="ON · Subida de fotos en Gestor de menú y visor en QR, carta y mozo."
+              offHint="OFF · Sin fotos de productos en ningún panel."
+              disabled={busy}
+              onToggle={() => setMenuImagesFlag(!menuImagesEnabled)}
             />
           </>
         )}

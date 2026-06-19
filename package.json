@@ -19,5 +19,8 @@
     "qrcode-terminal": "^0.12.0",
     "whatsapp-web.js": "^1.34.1",
     "ws": "^8.21.0"
+  },
+  "devDependencies": {
+    "@supabase/mcp-server-supabase": "^0.8.2"
   }
 }

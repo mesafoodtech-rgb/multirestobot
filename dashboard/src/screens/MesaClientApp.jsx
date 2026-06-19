@@ -5,6 +5,8 @@ import { resolveRestaurantForDashboard } from "../lib/restaurantTenant";
 import { useDemoTenant } from "../lib/DemoTenantContext";
 import { currency } from "../lib/format";
 import { computeCheckoutTotals } from "../lib/checkoutAdjustments";
+import MenuItemImageTrigger from "../components/MenuItemImageTrigger";
+import { readMenuImagesEnabled } from "../lib/menuImageConfig";
 
 function buildCartLines(cartById, menuById) {
   const names = [];
@@ -102,6 +104,7 @@ export default function MesaClientApp() {
   const [blockedTables, setBlockedTables] = useState([]);
 
   const [mesaEnabled, setMesaEnabled] = useState(false);
+  const [menuImagesEnabled, setMenuImagesEnabled] = useState(false);
   const [cashEnabled, setCashEnabled] = useState(false);
   const [mpEnabled, setMpEnabled] = useState(false);
 
@@ -264,6 +267,7 @@ export default function MesaClientApp() {
             ? data.metadata
             : {};
         setMesaEnabled(metadataObj.mesa_qr_enabled !== false);
+        setMenuImagesEnabled(readMenuImagesEnabled(metadataObj));
         setBlockedTables(normalizeBlockedMesaTables(metadataObj.mesa_qr_blocked_tables, Number(data.table_count) || 500));
         setCashEnabled(data.cash_enabled !== false);
         setMpEnabled(data.mercadopago_enabled !== false);
@@ -291,9 +295,12 @@ export default function MesaClientApp() {
       setError("");
       setLoading(true);
       try {
+        const selectFields = menuImagesEnabled
+          ? "id, name, price, category, description, image_thumb_path, image_full_path"
+          : "id, name, price, category, description";
         const { data, error: queryError } = await supabase
           .from("menu_items")
-          .select("id, name, price, category, description")
+          .select(selectFields)
           .eq("restaurant_id", restaurantId)
           .eq("available", true)
           .order("name", { ascending: true });
@@ -306,7 +313,7 @@ export default function MesaClientApp() {
       }
     }
     loadMenu();
-  }, [restaurantId]);
+  }, [restaurantId, menuImagesEnabled]);
 
   useEffect(() => {
     if (!availablePaymentChoices.length) {
@@ -730,7 +737,12 @@ export default function MesaClientApp() {
                       className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-700/80 bg-slate-900/40 px-3 py-2"
                     >
                       <div className="min-w-0 flex-1">
-                        <p className="font-medium text-slate-100">{item.name}</p>
+                        <div className="flex items-start gap-2">
+                          <p className="font-medium text-slate-100">{item.name}</p>
+                          {menuImagesEnabled ? (
+                            <MenuItemImageTrigger item={item} itemName={item.name} />
+                          ) : null}
+                        </div>
                         <p className="text-sm text-emerald-300/90">{currency(item.price)}</p>
                       </div>
                       <div className="flex items-center gap-2">

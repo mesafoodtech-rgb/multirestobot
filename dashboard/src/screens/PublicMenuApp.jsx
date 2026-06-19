@@ -3,6 +3,8 @@ import { supabase } from "../supabaseClient";
 import { resolveRestaurantForDashboard } from "../lib/restaurantTenant";
 import { useDemoTenant } from "../lib/DemoTenantContext";
 import { currency } from "../lib/format";
+import MenuItemImageTrigger from "../components/MenuItemImageTrigger";
+import { readMenuImagesEnabled } from "../lib/menuImageConfig";
 
 function groupMenuByCategory(menuItems) {
   const byCat = new Map();
@@ -33,6 +35,7 @@ export default function PublicMenuApp() {
   const { demoSlug } = useDemoTenant();
   const [restaurantName, setRestaurantName] = useState("");
   const [menuEnabled, setMenuEnabled] = useState(true);
+  const [menuImagesEnabled, setMenuImagesEnabled] = useState(false);
   const [menuItems, setMenuItems] = useState([]);
   const [menuSearchQuery, setMenuSearchQuery] = useState("");
   const [loading, setLoading] = useState(true);
@@ -57,10 +60,15 @@ export default function PublicMenuApp() {
             ? data.metadata
             : {};
         setMenuEnabled(metadataObj.qr_menu_enabled !== false);
+        const imagesOn = readMenuImagesEnabled(metadataObj);
+        setMenuImagesEnabled(imagesOn);
 
+        const selectFields = imagesOn
+          ? "id, name, price, category, description, image_thumb_path, image_full_path"
+          : "id, name, price, category, description";
         const { data: items, error: menuError } = await supabase
           .from("menu_items")
-          .select("id, name, price, category, description")
+          .select(selectFields)
           .eq("restaurant_id", data.id)
           .eq("available", true)
           .order("name", { ascending: true });
@@ -168,7 +176,12 @@ export default function PublicMenuApp() {
                   >
                     <div className="flex flex-wrap items-start justify-between gap-2">
                       <div className="min-w-0 flex-1">
-                        <p className="font-medium text-slate-100">{item.name}</p>
+                        <div className="flex items-start gap-2">
+                          <p className="font-medium text-slate-100">{item.name}</p>
+                          {menuImagesEnabled ? (
+                            <MenuItemImageTrigger item={item} itemName={item.name} />
+                          ) : null}
+                        </div>
                         {item.description ? (
                           <p className="mt-1 text-sm text-slate-400">{item.description}</p>
                         ) : null}

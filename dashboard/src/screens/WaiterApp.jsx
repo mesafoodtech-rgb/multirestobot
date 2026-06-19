@@ -18,6 +18,8 @@ import {
 } from "../lib/format";
 import { computeCheckoutTotals } from "../lib/checkoutAdjustments";
 import { readWaiterFavoriteIds, toggleWaiterFavorite } from "../lib/waiterFavorites";
+import MenuItemImageTrigger from "../components/MenuItemImageTrigger";
+import { readMenuImagesEnabled } from "../lib/menuImageConfig";
 
 const HISTORY_HOURS = 18;
 /** El contador del tab "Pedidos realizados" se oculta tras este tiempo (ms). */
@@ -101,6 +103,7 @@ export default function WaiterApp({ onLogout }) {
   const [restaurantName, setRestaurantName] = useState("");
   const [botNumber, setBotNumber] = useState("");
   const [waiterFulfillmentSelectorEnabled, setWaiterFulfillmentSelectorEnabled] = useState(false);
+  const [menuImagesEnabled, setMenuImagesEnabled] = useState(false);
   const [menuItems, setMenuItems] = useState([]);
   const [menuSearchQuery, setMenuSearchQuery] = useState("");
   const [orders, setOrders] = useState([]);
@@ -198,6 +201,7 @@ export default function WaiterApp({ onLogout }) {
           ? data.metadata
           : {};
       setWaiterFulfillmentSelectorEnabled(metadataObj.waiter_fulfillment_selector_enabled === true);
+      setMenuImagesEnabled(readMenuImagesEnabled(metadataObj));
     }
     loadRestaurant();
   }, [demoSlug]);
@@ -213,9 +217,12 @@ export default function WaiterApp({ onLogout }) {
     let active = true;
 
     async function loadMenu() {
+      const selectFields = menuImagesEnabled
+        ? "id, name, price, category, description, image_thumb_path, image_full_path"
+        : "id, name, price, category, description";
       const { data, error: queryError } = await supabase
         .from("menu_items")
-        .select("id, name, price, category, description")
+        .select(selectFields)
         .eq("restaurant_id", restaurantId)
         .eq("available", true)
         .order("name", { ascending: true });
@@ -282,7 +289,7 @@ export default function WaiterApp({ onLogout }) {
       active = false;
       supabase.removeChannel(channel);
     };
-  }, [restaurantId]);
+  }, [restaurantId, menuImagesEnabled]);
 
   /** Usuario de BD o texto corto si entraron solo con contraseña de rol (.env). */
   const waiterIdentityLabel = useMemo(() => {
@@ -949,7 +956,12 @@ export default function WaiterApp({ onLogout }) {
                         className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-500/20 bg-slate-900/50 px-3 py-2"
                       >
                         <div className="min-w-0 flex-1">
-                          <p className="font-medium text-slate-100">{item.name}</p>
+                          <div className="flex items-start gap-2">
+                            <p className="font-medium text-slate-100">{item.name}</p>
+                            {menuImagesEnabled ? (
+                              <MenuItemImageTrigger item={item} itemName={item.name} />
+                            ) : null}
+                          </div>
                           <p className="text-sm text-emerald-300/90">{currency(item.price)}</p>
                         </div>
                         <div className="flex items-center gap-2">
@@ -1033,7 +1045,12 @@ export default function WaiterApp({ onLogout }) {
                           className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-700/80 bg-slate-900/40 px-3 py-2"
                         >
                           <div className="min-w-0 flex-1">
-                            <p className="font-medium text-slate-100">{item.name}</p>
+                            <div className="flex items-start gap-2">
+                              <p className="font-medium text-slate-100">{item.name}</p>
+                              {menuImagesEnabled ? (
+                                <MenuItemImageTrigger item={item} itemName={item.name} />
+                              ) : null}
+                            </div>
                             <p className="text-sm text-emerald-300/90">{currency(item.price)}</p>
                           </div>
                           <div className="flex items-center gap-2">
